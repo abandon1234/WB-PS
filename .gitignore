@@ -11,3 +11,6 @@ app/.font_cache.json
 # （很多人用的是有版权的商业字体，不适合随代码分发）
 fonts/*
 !fonts/README.md
+
+# 图片生成模块的中转站配置：内含 API key，绝不入库
+data/

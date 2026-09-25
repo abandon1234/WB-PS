@@ -287,6 +287,16 @@ def bounds(session_id: str):
     return {"width": w, "height": h, "count": len(sess.items)}
 
 
+# ------------------------------------------------------------------ 图片生成模块
+
+# 独立模块：自带 /image 页面与 /api/image/* 接口，配置持久化在 data/ 下
+from .image_gen import config as image_config      # noqa: E402
+from .image_gen import routes as image_routes      # noqa: E402
+
+image_config.ensure_seed()
+app.include_router(image_routes.router)
+
+
 # ------------------------------------------------------------------ 静态资源
 
 if os.path.isdir(WEB_DIR):

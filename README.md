@@ -1,4 +1,15 @@
-# 图片文字处理工具
+# 图片文字处理与生成工具
+
+两个**相互独立**的模块，各有自己的页面路由，通过顶部导航切换：
+
+| 模块 | 页面 | 说明 |
+|---|---|---|
+| **图片文字处理** | `/` | 扫描图片文字、还原样式、无痕替换 |
+| **图像工坊** | `/image` | 调用中转站 gpt-image-2 生成图片（文生图 / 参照图） |
+
+---
+
+# 模块一：图片文字处理
 
 扫描图片中的文字，识别其**内容与位置**，还原**字体、字号、颜色、粗细**，
 并在原位置做**无痕修改替换**——改完看不出动过手脚。
@@ -141,25 +152,105 @@ Helvetica vs Calibri（得分几乎打平），而形状 IoU 是拿真实笔画�
 
 ---
 
-## 项目结构
+# 模块二：图像工坊（AI 图片生成）
+
+独立页面 **`/image`**，通过 OpenAI 兼容中转站调用 `gpt-image-2` 生成图片。
+与文字处理模块完全解耦：独立路由、独立静态资源、独立配置存储。
+
+## 页面构成
+
+| 区域 | 内容 |
+|---|---|
+| 提示词 | 多行输入 + 字数统计 + 常用短语快捷填充（Ctrl/Cmd + Enter 直接生成） |
+| 参照图 | 拖拽或点选上传，缩略图预览、大小与格式回显、可一键移除 |
+| 参数 | 尺寸（1:1 / 3:2 / 2:3 / 自动）、生成数量（1~4） |
+| 结果区 | 大图预览、多图缩略切换、下载、新窗口打开、再生成 |
+| 加载态 | 三层旋转光环 + **实时计时器** + 骨架屏 + 可取消 |
+| 错误态 | 错误标题 / 原因 / 修复建议 / 可折叠的原始返回 / 重试按钮 |
+
+## 中转站协议（实测结论）
+
+对接过程中验证出三条关键事实，都写进了 `app/image_gen/client.py`：
+
+1. **参照图走 `/v1/images/generations` 的 `image` 字段**（data URL 字符串），
+   而不是标准 `/v1/images/edits`——后者在不少中转站上直接返回空 `data`。
+   （已用"洋红底 + 中央白方块"的强特征参照图验证：生成结果洋红占比 85.8%。）
+2. **`b64_json` 返回的是 data URL**（带 `data:image/png;base64,` 前缀），
+   不是纯 base64；直接解码会因长度非 4 的倍数而报错，需要先剥前缀再补 padding。
+3. 内容被拦截时接口可能返回 **HTTP 200 + 空 data**，需要显式识别并给出提示。
+
+## 中转站配置管理
+
+点右上角「中转站配置」打开抽屉，支持：
+
+- **新增 / 编辑 / 删除** 配置
+- **启用 / 禁用**（禁用后自动切到下一个可用配置）
+- **设为使用**（多配置间一键切换当前生效项）
+- **测试连接**：拉取模型列表并确认目标模型是否存在，找不到时列出相近名称
+
+配置持久化在 `data/image_providers.json`，该目录已加入 `.gitignore`
+（内含 API key，不进版本库）。编辑时 **key 留空表示不修改**，
+避免前端拿到打码值后误覆盖真实 key。
+
+## 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/image` | 独立页面 |
+| GET | `/api/image/overview` | 配置列表 + 当前生效项 + 可选尺寸 |
+| GET | `/api/image/providers` | 配置列表 |
+| POST | `/api/image/providers` | 新增 |
+| PUT | `/api/image/providers/{id}` | 编辑（`api_key` 传空 = 不改） |
+| DELETE | `/api/image/providers/{id}` | 删除 |
+| POST | `/api/image/providers/{id}/toggle` | 启用 / 禁用 |
+| POST | `/api/image/providers/{id}/activate` | 设为当前使用 |
+| POST | `/api/image/providers/{id}/test` | 连通性测试 |
+| POST | `/api/image/generate` | 生成（multipart：`prompt` / `size` / `n` / `reference`） |
+
+## 测试
+
+```bash
+python tools/image_api_test.py                     # 用内置测试参数，含真实生成
+python tools/image_api_test.py --no-generate       # 跳过生成，省额度
+python tools/image_api_test.py --url <地址> --key <key>
+```
+
+覆盖：页面与静态资源、配置增删改查、启用禁用、设为当前、连通性、
+文生图、参照图生图、错误处理、测试数据清理。**当前 31 项通过。**
+
+> 注意：真实生成一次约需 30~60 秒、消耗一次额度，脚本默认会执行。
+
+---
+
+# 通用：项目结构
 
 ```
 WB-PS/
 ├── app/
-│   ├── main.py            FastAPI 服务与接口
+│   ├── main.py            FastAPI 服务与接口（两个模块共用入口）
 │   ├── ocr_engine.py      OCR 多后端探测（rapidocr / paddleocr），统一输出
 │   ├── style_analyzer.py  颜色 / 字号 / 粗细 / 背景类型 / 对齐 的反推
 │   ├── text_eraser.py     掩膜构建 + 分级擦除 + 残留自检
 │   ├── text_renderer.py   字号实测校准、超采样绘制、墨迹对齐、清晰度匹配
-│   ├── fonts.py           系统字体扫描与样式匹配
-│   └── pipeline.py        编排层（无状态，可复现）
+│   ├── fonts.py           系统字体 + 自定义字体扫描与样式匹配
+│   ├── pipeline.py        文字处理编排层（无状态，可复现）
+│   └── image_gen/         图像工坊（独立模块）
+│       ├── config.py      中转站配置存储（增删改查 / 启用禁用 / 当前项）
+│       ├── client.py      中转站 API 客户端（协议处理 + 错误映射）
+│       └── routes.py      /image 页面与 /api/image/* 接口
 ├── web/                   前端（原生 HTML/CSS/JS，零构建）
+│   ├── index.html/.css/.js        文字处理模块
+│   └── image.html/.css/.js        图像工坊模块
 ├── tools/
 │   ├── make_test_image.py 生成覆盖纯色/渐变/纹理的测试图
-│   ├── selftest.py        端到端自检 + 量化质量指标
-│   └── api_test.py        API 契约测试
+│   ├── selftest.py        文字处理算法自检 + 量化质量指标
+│   ├── font_match_test.py 字体匹配 + 笔画校准专项验证
+│   ├── api_test.py        文字处理 API 契约测试
+│   ├── image_api_test.py  图像工坊端到端测试
+│   └── snapshot.py        打包完整快照 zip
 ├── samples/               测试图与输出
 ├── fonts/                 自定义字体目录（导入的字体放这里）
+├── data/                  中转站配置（含 API key，已 gitignore）
 ├── requirements.txt
 └── start.bat / start.sh
 ```

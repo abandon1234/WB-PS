@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图像工坊 · AI 图片生成</title>
+<link rel="stylesheet" href="/static/image.css?v=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🎨</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">✦</span>
+    <div class="brand-text">
+      <h1>图像工坊</h1>
+      <p class="sub">gpt-image-2 · 文生图 / 参照图生图</p>
+    </div>
+  </div>
+
+  <nav class="mod-switch">
+    <a class="mod" href="/">文字处理</a>
+    <a class="mod active" href="/image">图片生成</a>
+  </nav>
+
+  <div class="topbar-actions">
+    <span class="provider-chip" id="providerChip" title="当前使用的中转站">
+      <i class="dot"></i><span id="providerName">未配置</span>
+    </span>
+    <button class="btn" id="btnOpenConfig">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 8.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.7 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.1a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
+      中转站配置
+    </button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ======================= 左侧控制台 ======================= -->
+  <aside class="console">
+
+    <!-- 提示词 -->
+    <section class="block">
+      <div class="block-head">
+        <span class="step">1</span>
+        <h2>提示词</h2>
+        <span class="counter" id="promptCount">0 / 4000</span>
+      </div>
+      <div class="prompt-wrap">
+        <textarea id="prompt" class="prompt" rows="6"
+          placeholder="描述你想生成的画面，例如：&#10;生成一个小狗，坐在草地上，阳光明媚，高清摄影风格"></textarea>
+      </div>
+      <div class="chips" id="quickPrompts">
+        <button class="chip" data-p="生成一个小狗">生成一个小狗</button>
+        <button class="chip" data-p="一只戴红色围巾的柴犬，纯白背景，产品摄影">柴犬 · 产品图</button>
+        <button class="chip" data-p="未来城市夜景，赛博朋克风格，霓虹灯，电影质感">赛博朋克城市</button>
+        <button class="chip" data-p="极简扁平插画，一位女孩在窗边看书，柔和配色">扁平插画</button>
+      </div>
+    </section>
+
+    <!-- 参照图 -->
+    <section class="block">
+      <div class="block-head">
+        <span class="step">2</span>
+        <h2>参照图</h2>
+        <span class="opt">可选</span>
+        <button class="link-btn" id="btnClearRef" hidden>移除</button>
+      </div>
+
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="refInput" accept="image/png,image/jpeg,image/webp,image/bmp" hidden>
+        <div class="dz-empty" id="dzEmpty">
+          <svg viewBox="0 0 24 24" class="dz-icon"><path d="M12 16V4m0 0 4 4m-4-4-4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <p>拖入图片，或点击选择</p>
+          <span>作为生成条件 · PNG / JPG / WEBP · ≤8MB</span>
+        </div>
+        <div class="dz-preview" id="dzPreview" hidden>
+          <img id="refThumb" alt="参照图">
+          <div class="dz-meta">
+            <span id="refName">—</span>
+            <span id="refSize">—</span>
+          </div>
+        </div>
+      </label>
+    </section>
+
+    <!-- 参数 -->
+    <section class="block">
+      <div class="block-head">
+        <span class="step">3</span>
+        <h2>参数</h2>
+      </div>
+      <div class="opt-row">
+        <label class="opt-label">尺寸</label>
+        <div class="segmented" id="segSize">
+          <button data-v="1024x1024" class="on">1:1</button>
+          <button data-v="1536x1024">3:2</button>
+          <button data-v="1024x1536">2:3</button>
+          <button data-v="auto">自动</button>
+        </div>
+      </div>
+      <div class="opt-row">
+        <label class="opt-label">数量</label>
+        <div class="segmented narrow" id="segCount">
+          <button data-v="1" class="on">1</button>
+          <button data-v="2">2</button>
+          <button data-v="3">3</button>
+          <button data-v="4">4</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 生成 -->
+    <div class="gen-bar">
+      <button class="btn-generate" id="btnGenerate">
+        <span class="g-icon">✦</span>
+        <span class="g-text">开始生成</span>
+      </button>
+      <button class="btn-cancel" id="btnCancel" hidden>
+        <span class="spinner-xs"></span>取消生成
+      </button>
+      <div class="gen-hint" id="genHint">约需 30~60 秒，请保持页面打开</div>
+    </div>
+  </aside>
+
+  <!-- ======================= 右侧结果区 ======================= -->
+  <section class="stage" id="stage">
+
+    <!-- 空状态 -->
+    <div class="state" id="stateEmpty">
+      <div class="state-art">
+        <svg viewBox="0 0 120 120" class="art-svg">
+          <defs>
+            <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#06b6d4"/>
+            </linearGradient>
+          </defs>
+          <rect x="18" y="28" width="84" height="64" rx="12" fill="none" stroke="url(#g1)" stroke-width="2.5"/>
+          <circle cx="42" cy="50" r="7" fill="url(#g1)" opacity=".85"/>
+          <path d="M26 82l22-22 16 16 12-10 18 16" fill="none" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <h3>还没有生成结果</h3>
+      <p>在左侧写下提示词，点击「开始生成」</p>
+      <div class="state-tips">
+        <span>· 描述越具体效果越好：主体 + 场景 + 风格 + 光线</span>
+        <span>· 需要保持原图风格时，上传一张参照图</span>
+      </div>
+    </div>
+
+    <!-- 生成中 -->
+    <div class="state" id="stateLoading" hidden>
+      <div class="gen-visual">
+        <div class="ring"></div>
+        <div class="ring r2"></div>
+        <div class="ring r3"></div>
+        <div class="core">✦</div>
+      </div>
+      <h3 id="loadingTitle">正在生成…</h3>
+      <p class="loading-sub" id="loadingSub">模型正在作画，通常需要 30~60 秒</p>
+      <div class="elapsed"><span id="elapsed">0.0</span>s</div>
+      <div class="skeleton-grid" id="skeletonGrid"></div>
+    </div>
+
+    <!-- 错误 -->
+    <div class="state" id="stateError" hidden>
+      <div class="err-card">
+        <div class="err-head">
+          <span class="err-icon">!</span>
+          <div>
+            <h3 id="errTitle">生成失败</h3>
+            <p id="errMsg">—</p>
+          </div>
+        </div>
+        <div class="err-hint" id="errHint" hidden></div>
+        <details class="err-detail" id="errDetailWrap" hidden>
+          <summary>查看原始返回</summary>
+          <pre id="errDetail"></pre>
+        </details>
+        <div class="err-actions">
+          <button class="btn" id="btnRetry">重试</button>
+          <button class="btn ghost" id="btnOpenConfig2">检查配置</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 结果 -->
+    <div class="result" id="result" hidden>
+      <div class="result-toolbar">
+        <div class="result-info">
+          <span class="tag" id="resSize">—</span>
+          <span class="tag" id="resModel">—</span>
+          <span class="tag" id="resElapsed">—</span>
+          <span class="tag ref" id="resRef" hidden>含参照图</span>
+        </div>
+        <div class="result-actions">
+          <button class="btn sm" id="btnDownload">
+            <svg viewBox="0 0 24 24" class="ic"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19h16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            下载
+          </button>
+          <button class="btn sm ghost" id="btnOpenNew">新窗口打开</button>
+          <button class="btn sm ghost" id="btnAgain">再生成一张</button>
+        </div>
+      </div>
+
+      <div class="canvas-area" id="canvasArea">
+        <img id="resultImg" alt="生成结果">
+      </div>
+
+      <div class="thumbs" id="thumbs" hidden></div>
+
+      <div class="result-foot">
+        <div class="foot-prompt">
+          <label>本次提示词</label>
+          <p id="resPrompt">—</p>
+        </div>
+        <div class="foot-revised" id="resRevisedWrap" hidden>
+          <label>模型改写后的提示词</label>
+          <p id="resRevised">—</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ======================= 配置抽屉 ======================= -->
+<div class="mask" id="mask" hidden></div>
+
+<aside class="drawer" id="drawer" hidden aria-label="中转站配置">
+  <div class="drawer-head">
+    <h2>中转站配置</h2>
+    <button class="icon-btn" id="btnCloseDrawer" title="关闭">✕</button>
+  </div>
+
+  <div class="drawer-body">
+    <!-- 列表 -->
+    <div id="providerList" class="plist"></div>
+
+    <button class="btn block-btn" id="btnAdd">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+      新增配置
+    </button>
+
+    <!-- 表单 -->
+    <form class="pform" id="pForm" hidden>
+      <div class="pform-head">
+        <h3 id="formTitle">新增配置</h3>
+        <button type="button" class="link-btn" id="btnCancelForm">取消</button>
+      </div>
+
+      <label class="fld">
+        <span>名称</span>
+        <input type="text" id="fName" class="input" placeholder="例如：主力中转站" maxlength="60">
+      </label>
+
+      <label class="fld">
+        <span>中转站地址</span>
+        <input type="text" id="fBase" class="input" placeholder="https://code.linlong520.com" spellcheck="false">
+        <em>填域名即可，末尾的 /v1 会自动处理</em>
+      </label>
+
+      <label class="fld">
+        <span>API Key</span>
+        <div class="key-row">
+          <input type="password" id="fKey" class="input" placeholder="sk-..." spellcheck="false" autocomplete="off">
+          <button type="button" class="icon-btn" id="btnEye" title="显示/隐藏">👁</button>
+        </div>
+        <em id="keyTip">仅保存在本机 data/ 目录，不会进版本库</em>
+      </label>
+
+      <label class="fld">
+        <span>模型名</span>
+        <input type="text" id="fModel" class="input" value="gpt-image-2" spellcheck="false">
+      </label>
+
+      <label class="fld">
+        <span>备注</span>
+        <input type="text" id="fNote" class="input" placeholder="可选" maxlength="200">
+      </label>
+
+      <label class="switch">
+        <input type="checkbox" id="fEnabled" checked>
+        <span>启用该配置</span>
+      </label>
+
+      <div class="pform-actions">
+        <button type="submit" class="btn accent" id="btnSave">保存</button>
+        <button type="button" class="btn ghost" id="btnTestInline">测试连接</button>
+      </div>
+
+      <div class="inline-msg" id="inlineMsg" hidden></div>
+    </form>
+  </div>
+
+  <div class="drawer-foot">
+    <p>配置存放于 <code>data/image_providers.json</code>，已加入 .gitignore。</p>
+  </div>
+</aside>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="/static/image.js?v=1.0"></script>
+</body>
+</html>
