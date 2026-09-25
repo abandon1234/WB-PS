@@ -18,3 +18,6 @@ data/
 # 快照 zip 是离线副本，不属于源码
 *.zip
 !samples/**/*.zip
+
+# 写提交信息用的临时文件（避免被 git add -A 收进来）
+.commitmsg.tmp

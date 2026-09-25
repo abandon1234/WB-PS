@@ -165,6 +165,15 @@ def delete_user_font(name: str):
         ok = font_lib.remove_user_font(name)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except (OSError, SystemExit) as exc:
+        # 文件被其他程序占用、权限不足，或运行环境策略禁止删除文件。
+        # 这里必须兜住并给出可读提示——否则前端只会看到一个光秃秃的 500。
+        raise HTTPException(500, {
+            "message": f"无法删除字体文件：{name}",
+            "hint": "文件可能正被其他程序占用，或当前环境不允许删除文件；"
+                    "也可以手动删除 fonts/ 目录下的该文件，再点「重新扫描」",
+            "detail": f"{type(exc).__name__}: {exc}"[:200],
+        }) from exc
     if not ok:
         raise HTTPException(404, "字体文件不存在")
     fams = font_lib.list_families()

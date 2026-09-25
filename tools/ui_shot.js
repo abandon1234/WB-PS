@@ -36,6 +36,36 @@ const PASSWORD = arg('password', '');
 const W = 1440;
 const H = 900;
 const PORT = 9333;
+const VERIFY = process.argv.includes('--verify');
+const VERIFY_PASS = [];
+const VERIFY_FAIL = [];
+
+const check = (name, ok, detail = '') => {
+  (ok ? VERIFY_PASS : VERIFY_FAIL).push(name);
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '   ' + detail : ''}`);
+};
+
+const sleep2 = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function clickAt(cdp, x, y) {
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await cdp.send('Input.dispatchMouseEvent',
+      { type, x, y, button: 'left', clickCount: 1, buttons: type === 'mousePressed' ? 1 : 0 });
+  }
+  await sleep2(320);
+}
+
+/** 按选择器找到元素中心点并派发真实鼠标事件（比 element.click() 更接近用户操作） */
+async function click(cdp, sel) {
+  // 用字符串拼接而不是嵌套模板串，避免转义踩坑
+  const expr = '(() => { const el = document.querySelector(' + JSON.stringify(sel) + ');'
+    + ' if (!el) return null; const r = el.getBoundingClientRect();'
+    + ' return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()';
+  const pt = await cdp.evaluate(expr);
+  if (!pt) { check(`点击 ${sel}`, false, '元素不存在'); return null; }
+  await clickAt(cdp, pt.x, pt.y);
+  return pt;
+}
 
 /* ---------------------------------------------------------------- CDP 客户端 */
 class CDP {
@@ -50,6 +80,10 @@ class CDP {
         const { resolve, reject } = this.waiting.get(msg.id);
         this.waiting.delete(msg.id);
         msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result);
+      } else if (msg.method === 'Runtime.exceptionThrown') {
+        this.events.push('EXCEPTION: ' +
+          (msg.params.exceptionDetails.exception?.description ||
+           msg.params.exceptionDetails.text || '').split('\n')[0]);
       } else if (msg.method) {
         this.events.push(msg);
       }
@@ -206,16 +240,23 @@ const SEED = `(async () => {
   });
 
   try {
+    // ---- 无痕改字页（同一外壳） ----
+    await cdp.goto(`${BASE}/`);
+    await cdp.waitFor(`!!document.getElementById('appSidebar').children.length`,
+      20000, '侧栏渲染');
+    await sleep(600);
+    await cdp.shot('ui_0_edit.png');
+
     // ---- 生成页（空态） ----
     await cdp.goto(`${BASE}/image`);
-    await cdp.waitFor(`!!document.getElementById('toolNav').children.length`,
+    await cdp.waitFor(`!!document.getElementById('appSidebar').children.length`,
       20000, '侧栏工具列表渲染');
     await cdp.shot('ui_1_generate.png');
 
     // ---- 作品库（先播种本机 IndexedDB，再点侧栏入口） ----
     const n = await cdp.evaluate(SEED);
     console.log(`  已向浏览器本机 IndexedDB 播种 ${n} 张示例图`);
-    await cdp.evaluate(`document.querySelector('[data-view=projects]').click(), 1`);
+    await cdp.evaluate(`location.hash = '#projects', 1`);
     await cdp.waitFor(`document.querySelectorAll('#projGrid .pcard').length > 0`,
       20000, '作品库网格渲染');
     await sleep(500);
@@ -229,12 +270,12 @@ const SEED = `(async () => {
     await cdp.evaluate(`document.getElementById('lbClose').click(), 1`);
 
     // ---- 结果态：把一张示例图塞进结果区，验证结果布局 ----
+    await cdp.evaluate(`location.hash = '#create', 1`);
+    await sleep(600);
     await cdp.evaluate(`(async () => {
       const rows = await ImgStore.list();
       const rec = await ImgStore.get(rows[0].id);
       const url = ImgStore.bufferToURL(rec.full, rec.mime);
-      document.querySelector('[data-tool=create]').click();
-      const btn = document.getElementById('btnGenerate');
       // 直接构造结果视图，不消耗额度
       const im = new Image();
       await new Promise(r => { im.onload = r; im.src = url; });
@@ -314,6 +355,140 @@ const SEED = `(async () => {
       }
     } else {
       console.log('  · 未提供 --password，跳过后台登录后的截图');
+    }
+
+    // ---- 交互回归：这两个坑都真的踩过，固化成断言 ----
+    if (VERIFY) {
+      console.log('\n[交互回归]');
+      await cdp.goto(`${BASE}/image`);
+      await cdp.waitFor(`!!document.getElementById('btnCollapse')`, 20000, '侧栏');
+      const collapsed = async () => cdp.evaluate(`(() => {
+        const q = s => document.querySelector(s);
+        const col = q('#btnCollapse'); const r = col && col.getBoundingClientRect();
+        const hit = r ? document.elementFromPoint(Math.round(r.x + r.width/2), Math.round(r.y + r.height/2)) : null;
+        const pop = q('#popWrap .pop');
+        let popVisible = false;
+        if (pop) { const pr = pop.getBoundingClientRect();
+          popVisible = pr.width > 0 && pr.height > 0 && getComputedStyle(pop).display !== 'none'; }
+        return {
+          collapsed: q('.app').classList.contains('collapsed'),
+          sidebarW: Math.round(q('.sidebar').getBoundingClientRect().width),
+          toggleW: r ? Math.round(r.width) : 0,
+          toggleClickable: !!col && !!hit && (col === hit || col.contains(hit)),
+          popInDom: document.querySelectorAll('#popWrap .pop').length,
+          popVisible,
+        };
+      })()`);
+
+      await cdp.evaluate(`localStorage.removeItem('wb.sbCollapsed'), 1`);
+      await cdp.goto(`${BASE}/image`);
+      await sleep(900);
+
+      await click(cdp, '#btnCollapse');
+      const c1 = await collapsed();
+      check('侧栏可折叠', c1.collapsed && c1.sidebarW < 100, `宽 ${c1.sidebarW}`);
+      check('折叠后按钮仍有尺寸且可点', c1.toggleW > 10 && c1.toggleClickable,
+        `${c1.toggleW}px clickable=${c1.toggleClickable}`);
+
+      await click(cdp, '#btnCollapse');
+      const c2 = await collapsed();
+      check('折叠后可再展开', !c2.collapsed && c2.sidebarW > 200, `宽 ${c2.sidebarW}`);
+
+      await click(cdp, '#pillSize');
+      const p1 = await collapsed();
+      check('尺寸菜单可打开', p1.popVisible && p1.popInDom === 1);
+      const opt = await cdp.evaluate(`(() => { const b = document.querySelector('#popWrap .pop button');
+        if (!b) return null; const r = b.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
+      if (opt) await clickAt(cdp, opt.x, opt.y);
+      const p2 = await collapsed();
+      check('选中后菜单彻底移除（不留残影）',
+        p2.popInDom === 0 && !p2.popVisible,
+        `dom=${p2.popInDom} visible=${p2.popVisible}`);
+
+      await click(cdp, '#pillSize');
+      await clickAt(cdp, 760, 300);
+      const p3 = await collapsed();
+      check('点空白处可关闭且无残影', p3.popInDom === 0 && !p3.popVisible);
+
+      const errs = cdp.events.filter(e => typeof e === 'string' && e.startsWith('EXCEPTION'));
+      check('无页面 JS 异常', errs.length === 0, errs.slice(0, 3).join(' | '));
+
+      // 文字处理页也接进了同一外壳
+      await cdp.goto(`${BASE}/`);
+      await cdp.waitFor(`!!document.getElementById('appSidebar').children.length`,
+        20000, '改字页侧栏');
+      await sleep(500);
+      const edit = await cdp.evaluate(`(() => {
+        const q = (s) => document.querySelector(s);
+        const vis = (el) => !!el && el.getBoundingClientRect().height > 0;
+        const on = q('#appSidebar .sb-item.on');
+        return {
+          hasNav: !!q('#appSidebar .sb-nav'),
+          activeKey: on ? on.dataset.key : '',
+          stage: vis(q('#stage')),
+          inspector: vis(q('.inspector')),
+          exportBtn: !!q('#btnExport'),
+          statusbar: vis(q('.statusbar')),
+        };
+      })()`);
+      check('改字页共用同一侧栏且高亮正确',
+        edit.hasNav && edit.activeKey === 'edit', `active=${edit.activeKey}`);
+      check('改字页画布 / 属性面板 / 状态栏在位',
+        edit.stage && edit.inspector && edit.exportBtn && edit.statusbar);
+
+      const errs2 = cdp.events.filter(e => typeof e === 'string' && e.startsWith('EXCEPTION'));
+      check('两个页面全程无 JS 异常', errs2.length === 0, errs2.slice(0, 3).join(' | '));
+
+      // 改字页走一遍真实流程：上传 → 识别 → 选中 → 编辑面板
+      const card = path.resolve(arg('card', 'samples/test_card.png'));
+      if (fs.existsSync(card)) {
+        await cdp.send('DOM.enable');
+        const doc = await cdp.send('DOM.getDocument', { depth: -1 });
+        const inp = await cdp.send('DOM.querySelector',
+          { nodeId: doc.root.nodeId, selector: '#fileInput' });
+        await cdp.send('DOM.setFileInputFiles', { files: [card], nodeId: inp.nodeId });
+        try {
+          await cdp.waitFor(`document.querySelectorAll('#itemList .item').length > 0`,
+            90000, '识别结果列表');
+          const f = await cdp.evaluate(`(() => {
+            const q = (s) => document.querySelector(s);
+            return {
+              items: document.querySelectorAll('#itemList .item').length,
+              badge: q('#countBadge').textContent,
+              exportEnabled: !q('#btnExport').disabled,
+              status: q('#statusText').textContent,
+            };
+          })()`);
+          check('上传后可识别出文字', f.items > 0, `${f.items} 项 · ${f.status}`);
+          check('导出按钮已可用', f.exportEnabled);
+
+          await click(cdp, '#itemList .item');
+          await sleep(400);
+          const ed = await cdp.evaluate(`(() => {
+            const q = (s) => document.querySelector(s);
+            return {
+              editorOpen: q('#editorCard') && q('#editorCard').getBoundingClientRect().height > 0,
+              origText: q('#origText').textContent,
+              inputText: q('#inpText').value,
+            };
+          })()`);
+          check('点列表项后编辑面板打开并回填原文',
+            ed.editorOpen && ed.origText !== '—' && ed.inputText === ed.origText,
+            `原文="${ed.origText}"`);
+          await cdp.shot('ui_11_edit_loaded.png');
+        } catch (e) {
+          check('改字页完整流程', false, e.message);
+        }
+      } else {
+        console.log(`  · 找不到 ${card}，跳过改字页流程测试`);
+      }
+
+      console.log(`\n交互回归：通过 ${VERIFY_PASS.length} 项，失败 ${VERIFY_FAIL.length} 项`);
+      if (VERIFY_FAIL.length) {
+        console.log('失败项：' + VERIFY_FAIL.join('、'));
+        process.exitCode = 1;
+      }
     }
 
     console.log('\n截图完成。');

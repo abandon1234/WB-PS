@@ -121,8 +121,6 @@ async function api(url, opt = {}) {
 
 /* ================================================================ 初始化 */
 (async function init() {
-  buildToolNav();
-  bindSidebar();
   bindRefs();
   bindPrompt();
   bindPills();
@@ -143,34 +141,19 @@ async function api(url, opt = {}) {
     toast(`后台未就绪：${S.status.message}`, 'warn');
   }
 
-  await refreshLibraryCount();
-  await refreshStorage();
-  renderToolChips();
+  // 视图由 URL hash 决定：#projects 进作品库，#<工具id> 选对应工具
+  applyHash();
+  window.addEventListener('hashchange', applyHash);
 })();
 
-/* ================================================================ 侧栏 */
-function buildToolNav() {
-  $('toolNav').innerHTML = TOOLS.map(t => `
-    <button class="sb-item${t.id === S.tool.id ? ' on' : ''}" data-tool="${t.id}">
-      <svg class="ic" viewBox="0 0 24 24"><use href="${t.icon}"/></svg>
-      <span>${esc(t.name)}</span>
-    </button>`).join('');
-  $('toolNav').querySelectorAll('[data-tool]').forEach(el => {
-    el.addEventListener('click', () => selectTool(el.dataset.tool));
-  });
-}
-
+/* ================================================================ 工具切换 */
 function selectTool(id) {
   const t = TOOLS.find(x => x.id === id);
   if (!t) return;
-  // 从「作品库」点工具时要能切回生成视图——之前这里提前 return，
-  // 导致在作品库里点当前已选中的工具没有任何反应。
-  if (S.view !== 'generate') switchView('generate');
-  if (t.id === S.tool.id) return;
+  // 从作品库点工具时要能切回生成视图
+  if (S.view !== 'generate') switchView('generate', t.id);
 
   S.tool = t;
-  $('toolNav').querySelectorAll('[data-tool]').forEach(el =>
-    el.classList.toggle('on', el.dataset.tool === id));
   $('toolTitle').textContent = t.title;
   $('toolDesc').textContent = t.desc;
   $('prompt').placeholder = t.placeholder;
@@ -178,35 +161,32 @@ function selectTool(id) {
   while (S.refs.length > t.maxRef) removeRef(S.refs.length - 1);
   renderToolChips();
   closePop();
+  setHash(t.id);
 }
 
-function bindSidebar() {
-  $('btnCollapse').addEventListener('click', () => {
-    const c = document.querySelector('.app').classList.toggle('collapsed');
-    localStorage.setItem('wb.sbCollapsed', c ? '1' : '0');
-  });
-  if (localStorage.getItem('wb.sbCollapsed') === '1') {
-    document.querySelector('.app').classList.add('collapsed');
-  }
-  document.querySelectorAll('[data-view]').forEach(el => {
-    el.addEventListener('click', () => switchView(el.dataset.view));
-  });
+/* ================================================================ 视图与深链 */
+/** 把当前视图/工具写进 URL（#projects 或 #<工具 id>），便于深链与侧栏高亮 */
+function setHash(key) {
+  const want = '#' + key;
+  if (location.hash !== want) history.replaceState(null, '', want);
+  if (window.WBShell) WBShell.syncActive();
 }
 
-function switchView(v) {
+function switchView(v, hashKey) {
   S.view = v;
   $('viewGenerate').hidden = v !== 'generate';
   $('viewProjects').hidden = v !== 'projects';
-  document.querySelectorAll('.sb-item').forEach(el => {
-    const isView = el.dataset.view;
-    if (isView) el.classList.toggle('on', isView === v);
-    else if (v !== 'generate') el.classList.remove('on');
-  });
-  document.querySelectorAll('#toolNav [data-tool]').forEach(el =>
-    el.classList.toggle('on', v === 'generate' && el.dataset.tool === S.tool.id));
-  // 深链：/image#projects
-  history.replaceState(null, '', v === 'projects' ? '#projects' : location.pathname);
+  setHash(v === 'projects' ? 'projects' : (hashKey || S.tool.id));
   if (v === 'projects') refreshLibrary();
+}
+
+/** URL hash → 界面状态。支持 /image#projects 与 /image#combine 这类深链。 */
+function applyHash() {
+  const h = location.hash.replace(/^#/, '');
+  if (h === 'projects') { switchView('projects'); return; }
+  const t = TOOLS.find(x => x.id === h);
+  switchView('generate', t ? t.id : null);
+  if (t) selectTool(t.id);
 }
 
 /* ================================================================ 参照图 */
@@ -292,32 +272,53 @@ function renderToolChips() {
 }
 
 /* ================================================================ 弹出菜单 */
-function closePop() { $('popWrap').hidden = true; }
+function closePop() {
+  const wrap = $('popWrap');
+  wrap.hidden = true;
+  // 必须把面板一起移除：它是 fixed 定位，光隐藏遮罩它仍会留在屏幕上
+  // ——之前就是这个 bug，弹出菜单关不掉了。
+  wrap.querySelectorAll('.pop').forEach(el => el.remove());
+}
 
 function openPop(anchor, items, title) {
   const wrap = $('popWrap');
+  closePop();
   wrap.hidden = false;
-  const old = document.querySelector('.pop');
-  if (old) old.remove();
 
   const pop = document.createElement('div');
   pop.className = 'pop';
   pop.innerHTML = (title ? `<div class="pop-title">${esc(title)}</div>` : '')
-    + items.map(it => `<button data-v="${esc(it.v)}" class="${it.on ? 'on' : ''}">
+    + items.map(it => `<button type="button" data-v="${esc(it.v)}" class="${it.on ? 'on' : ''}">
          <svg class="ic" viewBox="0 0 24 24"><use href="#i-check"/></svg>
          <span>${esc(it.label)}</span></button>`).join('');
-  document.body.appendChild(pop);
+  // 放进遮罩里，这样隐藏遮罩就等于隐藏菜单，不会再留残影
+  wrap.appendChild(pop);
 
+  // 先量尺寸再定位：优先贴锚点上方，放不下翻到下方，都不行就夹在视口内
   const r = anchor.getBoundingClientRect();
-  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
-  const top = r.top - pop.offsetHeight - 8;
-  pop.style.top = (top < 8 ? r.bottom + 8 : top) + 'px';
+  const pw = pop.offsetWidth;
+  const ph = pop.offsetHeight;
+  const vw = innerWidth;
+  const vh = innerHeight;
+  const gap = 8;
+
+  let left = r.left;
+  left = Math.max(gap, Math.min(left, vw - pw - gap));
+  let top = r.top - ph - gap;
+  if (top < gap) {
+    const below = r.bottom + gap;
+    top = below + ph <= vh - gap ? below : Math.max(gap, vh - ph - gap);
+  }
+  pop.style.left = Math.round(left) + 'px';
+  pop.style.top = Math.round(top) + 'px';
 
   pop.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
+    e.stopPropagation();
+    const v = b.dataset.v;
     closePop();
-    anchor.dispatchEvent(new CustomEvent('picked', { detail: b.dataset.v }));
+    anchor.dispatchEvent(new CustomEvent('picked', { detail: v }));
   });
   wrap.onclick = closePop;
 }
@@ -623,25 +624,16 @@ function bindProjects() {
   });
 }
 
-async function refreshLibraryCount() {
-  if (!window.ImgStore) return;
-  try {
-    $('projCount').textContent = await ImgStore.count();
-  } catch (_) { $('projCount').textContent = '0'; }
+let shellSyncTimer = null;
+/** 侧栏的作品数量与容量条由 shell.js 渲染，这里只负责触发一次刷新（合并抖动） */
+function syncShell() {
+  clearTimeout(shellSyncTimer);
+  shellSyncTimer = setTimeout(() => {
+    if (window.WBShell) WBShell.refresh();
+  }, 60);
 }
-
-async function refreshStorage() {
-  if (!window.ImgStore) return;
-  try {
-    const used = await ImgStore.usage();
-    $('storageBox').hidden = false;
-    $('storageText').textContent = fmtSize(used);
-    const q = await ImgStore.quota();
-    const pct = q && q.quota ? Math.min(100, (used / q.quota) * 100) : 0;
-    $('storageBar').style.width = (q ? pct : (used ? 6 : 0)) + '%';
-    if (q && pct > 80) toast('浏览器存储空间将满，建议清理作品库', 'warn');
-  } catch (_) { /* 忽略 */ }
-}
+async function refreshLibraryCount() { syncShell(); }
+async function refreshStorage() { syncShell(); }
 
 async function refreshLibrary() {
   if (!window.ImgStore) return;
@@ -651,9 +643,8 @@ async function refreshLibrary() {
     S.library = [];
     toast('读取本机作品库失败：' + e.message, 'err');
   }
-  $('projCount').textContent = S.library.length;
   renderLibrary();
-  refreshStorage();          // 不 await：容量统计不必阻塞画廊渲染
+  syncShell();               // 容量统计交给外壳，不阻塞画廊渲染
 }
 
 function filtered() {

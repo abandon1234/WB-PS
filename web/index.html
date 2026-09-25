@@ -4,18 +4,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图片文字处理工具 · OCR 无痕编辑</title>
-<link rel="stylesheet" href="/static/style.css?v=1.5">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
+<link rel="stylesheet" href="/static/shell.css?v=3.0">
+<link rel="stylesheet" href="/static/style.css?v=3.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%237ee04a'/><text x='50' y='72' font-size='62' text-anchor='middle' fill='%230a1503' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="logo">Aa</span>
-    <div>
-      <h1>图片文字处理工具</h1>
-      <p class="sub">OCR 定位 · 样式还原 · 无痕替换</p>
-    </div>
+<div class="app">
+
+  <aside class="sidebar" id="appSidebar"></aside>
+
+  <main class="main">
+
+  <header class="topbar">
+  <div class="page-title">
+    <h1>无痕改字</h1>
+    <p class="sub">OCR 定位 · 样式还原 · 原位替换</p>
   </div>
 
   <div class="topbar-actions">
@@ -44,7 +48,7 @@
   </div>
 </header>
 
-<main class="layout">
+<div class="layout text-workspace">
 
   <!-- ============ 画布区 ============ -->
   <section class="stage" id="stage">
@@ -81,8 +85,8 @@
     </div>
   </section>
 
-  <!-- ============ 侧栏 ============ -->
-  <aside class="sidebar">
+  <!-- ============ 右侧属性面板 ============ -->
+  <aside class="inspector">
 
     <div class="card status-card" id="statusCard">
       <div class="status-row">
@@ -237,13 +241,18 @@
       <div class="hint">导出时会自动应用全部改动，无需手动生成。</div>
     </div>
   </aside>
-</main>
+  </div>
 
-<footer class="statusbar">
-  <span id="footLeft">就绪</span>
-  <span id="footRight"></span>
-</footer>
+  <footer class="statusbar">
+    <span id="footLeft">就绪</span>
+    <span id="footRight"></span>
+  </footer>
 
-<script src="/static/app.js?v=1.5"></script>
+  </main>
+</div>
+
+<script src="/static/store.js?v=3.0"></script>
+<script src="/static/shell.js?v=3.0"></script>
+<script src="/static/app.js?v=3.0"></script>
 </body>
 </html>
