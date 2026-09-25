@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图片文字处理工具 · OCR 无痕编辑</title>
+<link rel="stylesheet" href="/static/style.css?v=1.5">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">Aa</span>
+    <div>
+      <h1>图片文字处理工具</h1>
+      <p class="sub">OCR 定位 · 样式还原 · 无痕替换</p>
+    </div>
+  </div>
+
+  <div class="topbar-actions">
+    <label class="btn primary" for="fileInput">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+      选择图片
+    </label>
+    <input type="file" id="fileInput" accept="image/*" hidden>
+
+    <button class="btn" id="btnRevert" disabled title="丢弃所有修改，回到原图">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      还原
+    </button>
+
+    <div class="split">
+      <button class="btn accent" id="btnExport" disabled>
+        <svg viewBox="0 0 24 24" class="ic"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19h16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        导出图片
+      </button>
+      <select id="selFormat" class="btn select" title="导出格式">
+        <option value="png">PNG</option>
+        <option value="jpg">JPG</option>
+        <option value="webp">WEBP</option>
+      </select>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ============ 画布区 ============ -->
+  <section class="stage" id="stage">
+    <div class="empty" id="emptyState">
+      <div class="empty-icon">🖼️</div>
+      <h2>拖入图片，或点击「选择图片」</h2>
+      <p>支持 PNG / JPG / WEBP / BMP · 自动识别文字位置与样式</p>
+      <div class="empty-hints">
+        <span>滚轮缩放</span><span>空格拖拽平移</span><span>点击文字框编辑</span>
+      </div>
+    </div>
+
+    <div class="viewport" id="viewport" hidden>
+      <div class="scene" id="scene">
+        <canvas id="imgLayer"></canvas>
+        <canvas id="boxLayer"></canvas>
+        <div class="marquee" id="marquee" hidden></div>
+      </div>
+    </div>
+
+    <div class="loading" id="loading" hidden>
+      <div class="spinner"></div>
+      <p id="loadingText">正在识别文字…</p>
+    </div>
+
+    <div class="toolbar-float">
+      <button class="tbtn" id="btnZoomOut" title="缩小">−</button>
+      <span id="zoomLabel">100%</span>
+      <button class="tbtn" id="btnZoomIn" title="放大">+</button>
+      <button class="tbtn" id="btnZoomFit" title="适应窗口">⤢</button>
+      <span class="sep"></span>
+      <button class="tbtn toggle" id="btnShowBoxes" title="显示/隐藏识别框">▦</button>
+      <button class="tbtn toggle" id="btnCompare" title="按住查看原图">◑</button>
+    </div>
+  </section>
+
+  <!-- ============ 侧栏 ============ -->
+  <aside class="sidebar">
+
+    <div class="card status-card" id="statusCard">
+      <div class="status-row">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">等待上传图片</span>
+      </div>
+      <div class="status-meta" id="statusMeta"></div>
+    </div>
+
+    <!-- 列表 -->
+    <div class="card grow">
+      <div class="card-head">
+        <h3>识别结果 <span class="badge" id="countBadge">0</span></h3>
+        <div class="head-actions">
+          <label class="mini-check" title="只显示已修改项">
+            <input type="checkbox" id="chkOnlyEdited"><span>仅改动</span>
+          </label>
+        </div>
+      </div>
+      <div class="search-row">
+        <input type="text" id="searchInput" class="input" placeholder="搜索文字内容…">
+      </div>
+      <div class="list" id="itemList">
+        <div class="list-empty">暂无识别结果</div>
+      </div>
+    </div>
+
+    <!-- 属性编辑 -->
+    <div class="card" id="editorCard" hidden>
+      <div class="card-head">
+        <h3>编辑文字 <span class="badge muted" id="editIndex"></span></h3>
+        <button class="mini-btn" id="btnResetItem" title="恢复该项原始内容与样式">重置</button>
+      </div>
+
+      <div class="field">
+        <label>文字内容</label>
+        <textarea id="inpText" class="input textarea" rows="2" placeholder="输入替换文字，留空则仅擦除"></textarea>
+        <div class="hint-row">
+          <span class="orig">原文：<b id="origText">—</b></span>
+          <span class="counter" id="charCount">0 字</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>字体 <span class="v" id="fontHint"></span></label>
+        <select id="selFont" class="input"></select>
+        <div class="font-tools">
+          <label class="mini-btn" for="fontFileInput" title="从本地选择 .ttf / .otf / .ttc 导入">导入字体</label>
+          <button class="mini-btn" id="btnFontReload" title="重新扫描 fonts 目录">重新扫描</button>
+          <span class="font-count" id="userFontCount"></span>
+        </div>
+        <input type="file" id="fontFileInput" accept=".ttf,.otf,.ttc,.otc" multiple hidden>
+        <div class="hint">自动匹配 = 按原文字的字形比例与真实轮廓挑最接近的字体</div>
+      </div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>字号 <span class="v" id="vSize">自动</span></label>
+          <input type="range" id="rngSize" min="50" max="200" value="100" step="1">
+          <div class="hint">自动 = 按原文字墨迹高度反推</div>
+        </div>
+        <div class="field">
+          <label>颜色</label>
+          <div class="color-row">
+            <input type="color" id="inpColor" class="color">
+            <button class="mini-btn" id="btnPickColor" title="从原文字上吸取颜色">吸色</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>样式</label>
+        <div class="chips">
+          <button class="chip" id="chipBold"><b>B</b> 加粗</button>
+          <button class="chip" id="chipItalic"><i>I</i> 斜体</button>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>水平对齐</label>
+          <div class="segmented" id="segAlign">
+            <button data-v="left" class="on">左</button>
+            <button data-v="center">中</button>
+            <button data-v="right">右</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>垂直基准</label>
+          <div class="segmented" id="segVAlign">
+            <button data-v="bottom" class="on" title="文字底部（基线）对齐，最不容易看出被改过">底</button>
+            <button data-v="center" title="墨迹垂直居中">中</button>
+            <button data-v="top" title="文字顶部对齐">顶</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>擦除方式</label>
+        <select id="selErase" class="input">
+          <option value="auto">自动（按背景自适应）</option>
+          <option value="fill">纯色填充</option>
+          <option value="linear">渐变外推</option>
+          <option value="inpaint">内容修复 Telea</option>
+          <option value="ns">内容修复 NS</option>
+          <option value="blur">邻近模糊</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>位置微调 <span class="v" id="vOffset">0, 0</span></label>
+        <div class="nudge">
+          <button class="tbtn" data-dx="0" data-dy="-1">↑</button>
+          <div class="nudge-mid">
+            <button class="tbtn" data-dx="-1" data-dy="0">←</button>
+            <button class="tbtn" data-dx="0" data-dy="0" title="归零">•</button>
+            <button class="tbtn" data-dx="1" data-dy="0">→</button>
+          </div>
+          <button class="tbtn" data-dx="0" data-dy="1">↓</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="switch">
+          <input type="checkbox" id="chkAutoFamily" checked>
+          <span>自动匹配最接近的字体（推荐）</span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="chkMatchStroke" checked>
+          <span>匹配原图笔画粗细（避免新字偏细，最影响"看不看得出来"）</span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="chkAutoFit">
+          <span>过宽时缩字号以适应原位置（默认关：字变小比略超出更显眼）</span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="chkMatchSharp" checked>
+          <span>匹配原图清晰度，避免文字过锐</span>
+        </label>
+      </div>
+
+      <div class="warn-box" id="warnBox" hidden></div>
+    </div>
+
+    <!-- 概览 -->
+    <div class="card" id="overviewCard" hidden>
+      <div class="card-head"><h3>批量操作</h3></div>
+      <div class="bulk">
+        <button class="btn sm" id="btnApplyAll">生成结果图</button>
+        <button class="btn sm ghost" id="btnClearAll">清空所有改动</button>
+      </div>
+      <div class="hint">导出时会自动应用全部改动，无需手动生成。</div>
+    </div>
+  </aside>
+</main>
+
+<footer class="statusbar">
+  <span id="footLeft">就绪</span>
+  <span id="footRight"></span>
+</footer>
+
+<script src="/static/app.js?v=1.5"></script>
+</body>
+</html>

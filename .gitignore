@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+samples/out/
+app/.font_cache.json
+*.log
+.DS_Store
+
+# 自定义字体：保留目录与说明，但不要把字体文件提交出去
+# （很多人用的是有版权的商业字体，不适合随代码分发）
+fonts/*
+!fonts/README.md
