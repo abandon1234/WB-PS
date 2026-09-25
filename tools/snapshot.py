@@ -27,6 +27,11 @@ SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".idea", ".vscode"}
 # 用相对路径精确排除，避免误伤同名的普通目录
 SKIP_REL_DIRS = {os.path.join("samples", "out")}
 SKIP_FILES = {".font_cache.json"}
+# 管理密码哈希不进快照：可再生，且多一个凭证就多一个泄露面
+SKIP_REL_FILES = {
+    os.path.join("data", "admin.json"),
+    os.path.join("data", "admin.json.tmp"),
+}
 SKIP_SUFFIX = (".pyc", ".pyo", ".log", ".tmp")
 
 
@@ -66,10 +71,10 @@ def build(version: str, out_dir: str, quiet: bool = False) -> str:
                            and (os.path.join(rel_dir, d) if rel_dir != "." else d)
                            not in SKIP_REL_DIRS]
             for fn in filenames:
-                if fn in SKIP_FILES or fn.endswith(SKIP_SUFFIX):
+                rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
+                if fn in SKIP_FILES or fn.endswith(SKIP_SUFFIX) or rel in SKIP_REL_FILES:
                     continue
                 full = os.path.join(dirpath, fn)
-                rel = os.path.relpath(full, ROOT)
                 try:
                     z.write(full, os.path.join(prefix, rel))
                 except OSError:
@@ -84,11 +89,15 @@ def build(version: str, out_dir: str, quiet: bool = False) -> str:
         print(f"  原始 {raw / 1024:.1f} KB → 压缩后 {size / 1024:.1f} KB")
         # 提示是否含自定义字体
         with zipfile.ZipFile(out) as z:
-            fonts = [x for x in z.namelist()
-                     if "/fonts/" in x and x.lower().endswith((".ttf", ".otf", ".ttc", ".otc"))]
+            names = z.namelist()
+        fonts = [x for x in names
+                 if "/fonts/" in x and x.lower().endswith((".ttf", ".otf", ".ttc", ".otc"))]
         print(f"  自定义字体: {len(fonts)} 个" +
               (f"（{', '.join(os.path.basename(f) for f in fonts[:3])}"
                + ("..." if len(fonts) > 3 else "") + "）" if fonts else ""))
+        hosted = [x for x in names if "/data/" in x]
+        if hosted:
+            print(f"  ⚠ 含 data/ 配置 {len(hosted)} 个（内有明文 API key，请勿外发此 zip）")
     return out
 
 
