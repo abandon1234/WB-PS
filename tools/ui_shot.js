@@ -67,6 +67,23 @@ async function click(cdp, sel) {
   return pt;
 }
 
+/** 设值并派发 input 事件，触发页面自己的编辑逻辑 */
+async function setInput(cdp, sel, value) {
+  const expr = '(() => { const el = document.querySelector(' + JSON.stringify(sel) + ');'
+    + ' if (!el) return null; el.value = ' + JSON.stringify(value) + ';'
+    + " el.dispatchEvent(new Event('input', { bubbles: true })); return el.value; })()";
+  return cdp.evaluate(expr);
+}
+
+/** 往 <input type=file> 里塞真实文件（走 DOM.setFileInputFiles） */
+async function setFile(cdp, sel, filePath) {
+  await cdp.send('DOM.enable');
+  const doc = await cdp.send('DOM.getDocument', { depth: -1 });
+  const node = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: sel });
+  if (!node || !node.nodeId) throw new Error('找不到文件输入框：' + sel);
+  await cdp.send('DOM.setFileInputFiles', { files: [filePath], nodeId: node.nodeId });
+}
+
 /* ---------------------------------------------------------------- CDP 客户端 */
 class CDP {
   constructor(ws) {
@@ -84,6 +101,10 @@ class CDP {
         this.events.push('EXCEPTION: ' +
           (msg.params.exceptionDetails.exception?.description ||
            msg.params.exceptionDetails.text || '').split('\n')[0]);
+      } else if (msg.method === 'Page.javascriptDialogOpening') {
+        // 页面里的 confirm() 会在无头模式下把流程挂住，统一自动确认
+        this.events.push('DIALOG: ' + (msg.params.message || '').split('\n')[0]);
+        this.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
       } else if (msg.method) {
         this.events.push(msg);
       }
@@ -477,6 +498,66 @@ const SEED = `(async () => {
             ed.editorOpen && ed.origText !== '—' && ed.inputText === ed.origText,
             `原文="${ed.origText}"`);
           await cdp.shot('ui_11_edit_loaded.png');
+
+          // ---- 切页续做：这是用户报的核心问题 ----
+          await setInput(cdp, '#inpText', '切页续做测试');
+          await sleep(1800);                      // 等防抖预览 + 落盘
+          const before = await cdp.evaluate(`(() => ({
+            changed: document.querySelectorAll('#itemList .item.changed').length,
+            foot: document.getElementById('footLeft').textContent,
+          }))()`);
+          check('切页前已产生改动', before.changed >= 1, `${before.changed} 项 · ${before.foot}`);
+
+          await cdp.goto(`${BASE}/image`);        // 去生成页
+          await cdp.waitFor(`!!document.getElementById('appSidebar')`, 20000, '生成页');
+          await sleep(600);
+          await cdp.goto(`${BASE}/`);             // 再切回来
+          try {
+            await cdp.waitFor(`document.querySelectorAll('#itemList .item').length > 0`,
+              45000, '切回后自动恢复');
+            await sleep(1200);                    // 等改动样式回填
+            const after = await cdp.evaluate(`(() => {
+              const q = (s) => document.querySelector(s);
+              return {
+                items: document.querySelectorAll('#itemList .item').length,
+                changed: document.querySelectorAll('#itemList .item.changed').length,
+                status: q('#statusText').textContent,
+                foot: q('#footLeft').textContent,
+                visible: !q('#viewport').hidden,
+                closeShown: !q('#btnClose').hidden,
+              };
+            })()`);
+            check('切回后原图与文字框仍在',
+              after.visible && after.items === f.items, `${after.items} 项（切页前 ${f.items}）`);
+            check('切回后改动未丢失',
+              after.changed >= 1 && after.changed === before.changed,
+              `${after.changed} 项 · ${after.status}`);
+            check('切回后可继续编辑（关闭按钮已出现）', after.closeShown);
+            await cdp.shot('ui_12_restored.png');
+          } catch (e) {
+            check('切回后自动恢复工作区', false, e.message);
+          }
+
+          // ---- 关闭图片应清掉本机快照 ----
+          await click(cdp, '#btnClose');
+          await sleep(900);
+          const closed = await cdp.evaluate(`(() => {
+            const q = (s) => document.querySelector(s);
+            return {
+              items: document.querySelectorAll('#itemList .item').length,
+              emptyShown: !q('#emptyState').hidden,
+              closeHidden: q('#btnClose').hidden,
+            };
+          })()`);
+          check('关闭图片后回到空状态',
+            closed.emptyShown && closed.items === 0 && closed.closeHidden,
+            `${closed.items} 项`);
+
+          await cdp.goto(`${BASE}/`);
+          await sleep(1400);
+          const afterClose = await cdp.evaluate(
+            `document.querySelectorAll('#itemList .item').length`);
+          check('关闭后刷新不再自动恢复', afterClose === 0, `${afterClose} 项`);
         } catch (e) {
           check('改字页完整流程', false, e.message);
         }

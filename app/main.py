@@ -51,6 +51,7 @@ _SESSIONS: Dict[str, Session] = {}
 _SESS_LOCK = threading.Lock()
 _MAX_SESSIONS = 24
 _TTL = 3600 * 4
+_MAX_BATCH_PREVIEW = 60          # 单次批量预览的上限，防止一次请求做太多重活
 
 
 def _gc() -> None:
@@ -294,6 +295,57 @@ def bounds(session_id: str):
     sess = _get(session_id)
     h, w = sess.image.shape[:2]
     return {"width": w, "height": h, "count": len(sess.items)}
+
+
+# ------------------------------------------------------------------ 断点续做
+
+@app.get("/api/session/{sid}")
+def session_info(sid: str):
+    """读回一份仍在内存里的会话（**不重跑 OCR**）。
+
+    切页/刷新回来后前端先用它判断服务端会话是否还活着：
+    活着就直接复用识别结果，省掉一次几秒的 OCR；
+    404 时才用本机保存的原图重新识别。"""
+    sess = _get(sid)
+    h, w = sess.image.shape[:2]
+    meta = {k: v for k, v in (sess.meta or {}).items() if k != "items"}
+    return {
+        "session_id": sid,
+        "name": sess.name,
+        "width": w,
+        "height": h,
+        "count": len(sess.items),
+        "items": sess.items,
+        "meta": meta,
+    }
+
+
+@app.post("/api/preview-batch")
+async def preview_batch(payload: dict = Body(...)):
+    """批量取预览补丁。
+
+    恢复工作区时如果把 N 处改动逐条调 /api/preview，就是 N 次往返；
+    这里一次拿全，前端按 region 依次贴回画布即可。"""
+    sid = payload.get("session_id")
+    edits: Dict[str, dict] = payload.get("edits") or {}
+    if sid is None:
+        raise HTTPException(400, "缺少 session_id")
+    sess = _get(sid)
+
+    found = {str(it.get("id")): it for it in sess.items}
+    out: List[dict] = []
+    for key, edit in list(edits.items())[:_MAX_BATCH_PREVIEW]:
+        item = found.get(str(key))
+        if item is None:
+            continue                                   # 对不上的改动直接跳过
+        png, info = pipeline.preview_item(sess.image, item, edit or {})
+        out.append({
+            "id": item.get("id"),
+            "patch": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+            "region": info.get("region"),
+            "info": {k: v for k, v in info.items() if k != "region"},
+        })
+    return {"items": out, "count": len(out)}
 
 
 # ------------------------------------------------------------------ 图片生成模块

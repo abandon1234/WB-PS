@@ -22,6 +22,7 @@ const api = async (url, body, isForm = false) => {
 /* ---------------------------------------------------------------- 状态 */
 const S = {
   sessionId: null,
+  fileName: null,        // 原图文件名（断点续做时要还原）
   file: null,
   img: null,             // 原始 HTMLImageElement
   W: 0, H: 0,
@@ -308,6 +309,7 @@ function setEdit(id, patch) {
   if (!isChanged(id)) delete S.edits[id];
   schedulePreview(id);
   renderList();
+  persistSoon();
 }
 
 const schedulePreview = debounce(async (id) => {
@@ -363,14 +365,205 @@ async function previewItem(id) {
   paintBoxes();
   S.dirty = true;
   updateDirty();
+  persistNow();                 // 一轮编辑结束，立即落盘，切页不丢
 }
 
 function updateDirty() {
   const n = S.items.filter(it => isChanged(it.id)).length;
   $('btnRevert').disabled = !S.items.length;
   $('btnExport').disabled = !S.items.length;
+  show($('btnClose'), !!S.items.length);
   show($('overviewCard'), !!S.items.length);
   foot(n ? `已修改 ${n} 处` : (S.items.length ? '未做修改' : '就绪'));
+}
+
+/* ---------------------------------------------------------------- 断点续做
+   切到 /image 再回来是整页跳转，内存里的东西全会没。
+   这里把工作区落到浏览器本机：轻量状态每次编辑都存，原图只在换图时存。
+   恢复时优先复用服务端内存会话（不重跑 OCR），会话没了就用本机原图重新识别。 */
+
+/** 只保留可序列化的部分；_warnings 是预览反馈，不属于用户改动 */
+function cleanEdits() {
+  const out = {};
+  Object.keys(S.edits).forEach((k) => {
+    const { _warnings, ...rest } = S.edits[k];
+    out[k] = rest;
+  });
+  return out;
+}
+
+function snapshot() {
+  return {
+    sessionId: S.sessionId,
+    fileName: S.fileName,
+    W: S.W, H: S.H,
+    items: S.items,
+    edits: cleanEdits(),
+    view: { scale: S.scale, panX: S.panX, panY: S.panY,
+            showBoxes: S.showBoxes, sel: S.sel },
+    backend: S.backend,
+    ts: Date.now(),
+  };
+}
+
+async function persistNow() {
+  if (!S.sessionId || !S.items.length || !window.TextWS) return;
+  try { await TextWS.saveState(snapshot()); } catch (_) { /* 存不下不影响使用 */ }
+}
+const persistSoon = debounce(persistNow, 400);
+
+/** 换图时连原图一起存，之后恢复就不必再让用户选一次文件 */
+async function persistImage(file) {
+  if (!window.TextWS) return;
+  try {
+    const buf = await file.arrayBuffer();
+    await TextWS.saveImage(buf, file.type, file.name);
+  } catch (_) { /* 忽略 */ }
+}
+
+async function sessionAlive(sid) {
+  try {
+    const r = await fetch(`/api/session/${encodeURIComponent(sid)}`);
+    return r.ok ? await r.json() : null;
+  } catch (_) { return null; }
+}
+
+/** 重新识别后 item id 可能变，按「id → 原文 + 位置」两级兜底匹配改动 */
+function remapEdits(oldItems, newItems, edits) {
+  const byId = new Map(newItems.map(it => [String(it.id), it.id]));
+  const rectKey = (it) => `${it.text}\u0000${it.rect.x},${it.rect.y},${it.rect.w},${it.rect.h}`;
+  const byRect = new Map(newItems.map(it => [rectKey(it), it.id]));
+  const oldById = new Map(oldItems.map(it => [String(it.id), it]));
+
+  const out = {};
+  Object.keys(edits).forEach((k) => {
+    if (byId.has(String(k))) { out[byId.get(String(k))] = edits[k]; return; }
+    const old = oldById.get(String(k));
+    if (old && byRect.has(rectKey(old))) out[byRect.get(rectKey(old))] = edits[k];
+  });
+  return out;
+}
+
+/** 一次性把已改动的样式贴回画布（服务端批量出补丁，避免 N 次往返） */
+async function repaintEdits() {
+  const edits = cleanEdits();
+  const keys = Object.keys(edits);
+  if (!keys.length || !S.sessionId) return;
+  try {
+    const res = await api('/api/preview-batch', { session_id: S.sessionId, edits });
+    for (const it of res.items || []) {
+      if (it.region) { await pastePatch(it.region, it.patch); S.applied[it.id] = it.region; }
+      if (it.info?.warnings?.length && S.edits[it.id]) {
+        S.edits[it.id]._warnings = it.info.warnings;
+      }
+    }
+    paintBoxes();
+  } catch (err) {
+    foot('改动样式回填失败（改动本身仍在）：' + err.message);
+  }
+}
+
+async function restoreWorkspace() {
+  if (!window.TextWS) return false;
+  let saved = null;
+  try { saved = await TextWS.load(); } catch (_) { return false; }
+  if (!saved || !saved.state || !saved.image || !saved.image.buf) return false;
+
+  const st = saved.state;
+  if (!Array.isArray(st.items) || !st.items.length) return false;
+
+  busy(true, '正在恢复上次的编辑…');
+  try {
+    const type = saved.image.type || 'image/png';
+    const name = saved.image.name || st.fileName || 'image.png';
+    const blob = new Blob([saved.image.buf], { type });
+    const url = URL.createObjectURL(blob);
+    const im = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i); i.onerror = () => rej(new Error('原图解码失败'));
+      i.src = url;
+    });
+    S.img = im; S.W = im.naturalWidth; S.H = im.naturalHeight; S.fileName = name;
+    imgLayer.width = S.W; imgLayer.height = S.H;
+    boxLayer.width = S.W; boxLayer.height = S.H;
+    show($('emptyState'), false);
+    show($('viewport'), true);
+    paintBase();
+
+    // 服务端会话还在就直接复用；不在就用本机原图重新识别
+    let items = st.items;
+    let sid = st.sessionId;
+    let backend = st.backend;
+    let reused = false;
+    const info = sid ? await sessionAlive(sid) : null;
+    if (info && Array.isArray(info.items) && info.items.length) {
+      items = info.items; backend = info.meta?.backend || backend; reused = true;
+    } else {
+      const fd = new FormData();
+      fd.append('file', new File([blob], name, { type }), name);
+      fd.append('merge_lines', 'true');
+      const res = await api('/api/analyze', fd, true);
+      sid = res.session_id; items = res.items || []; backend = res.backend;
+    }
+
+    S.sessionId = sid;
+    S.items = items;
+    if (backend) S.backend = backend;
+    S.edits = remapEdits(st.items, items, st.edits || {});
+    S.applied = {}; S.sel = null; S.resultMode = false;
+
+    const v = st.view || {};
+    S.showBoxes = v.showBoxes !== false;
+    $('btnShowBoxes').classList.toggle('on', S.showBoxes);
+    if (v.scale) { S.scale = v.scale; S.panX = v.panX; S.panY = v.panY; applyView(); }
+    else fitView();
+
+    show($('editorCard'), false);
+    renderList(); paintBoxes(); updateDirty();
+
+    // 先把改动贴回画布，再选中，这样编辑器里能立刻看到字号/字形反馈
+    await repaintEdits();
+    if (typeof v.sel === 'number' && S.items.some(i => i.id === v.sel)) select(v.sel);
+
+    const n = Object.keys(S.edits).length;
+    status('已恢复上次的编辑', 'ok',
+      `${S.items.length} 处文字 · ${n} 处改动 · ${S.W}×${S.H}`
+      + (reused ? '' : ' · 会话已过期，已重新识别'));
+    foot(`已恢复上次编辑状态（${n} 处改动）`);
+    return true;
+  } catch (err) {
+    console.error('恢复工作区失败', err);
+    TextWS.clear().catch(() => {});
+    S.sessionId = null; S.items = []; S.edits = {}; S.img = null;
+    show($('emptyState'), true); show($('viewport'), false);
+    renderList(); updateDirty();
+    status('上次的编辑状态恢复失败', 'err', esc(err.message));
+    return false;
+  } finally {
+    busy(false);
+  }
+}
+
+/** 主动丢弃当前图片与本地快照，回到空状态 */
+async function closeImage() {
+  if (!S.items.length && !S.sessionId) return;
+  if (!confirm('关闭当前图片？未导出的改动会一并丢弃。')) return;
+  if (window.TextWS) { try { await TextWS.clear(); } catch (_) { /* 忽略 */ } }
+
+  S.sessionId = null; S.fileName = null; S.file = null; S.img = null;
+  S.items = []; S.edits = {}; S.applied = {}; S.sel = null;
+  S.W = 0; S.H = 0; S.resultMode = false;
+  ictx.clearRect(0, 0, imgLayer.width, imgLayer.height);
+  bctx.clearRect(0, 0, boxLayer.width, boxLayer.height);
+
+  show($('emptyState'), true);
+  show($('viewport'), false);
+  show($('editorCard'), false);
+  show($('overviewCard'), false);
+  $('fileInput').value = '';
+  renderList(); updateDirty();
+  status('等待上传图片', '', '');
+  foot('就绪 · 拖入图片开始');
 }
 
 /* ---------------------------------------------------------------- 上传 */
@@ -413,12 +606,17 @@ async function handleFile(file) {
 
     S.sessionId = res.session_id;
     S.items = res.items || [];
+    S.fileName = file.name;
     renderList(); paintBoxes(); updateDirty();
 
     status(`识别完成 · ${res.count} 处文字`, 'ok',
       `引擎 ${esc(res.backend)} · 耗时 ${dt}ms · ${S.W}×${S.H}`);
     foot(`识别到 ${res.count} 处文字，点击任意框开始编辑`,
          `${Math.round(S.W)}×${Math.round(S.H)}`);
+
+    // 存一份到本机：切到别的模块再回来能接着改
+    await persistImage(file);
+    await persistNow();
   } catch (err) {
     status('处理失败：' + err.message, 'err');
     foot('处理失败：' + err.message);
@@ -434,6 +632,7 @@ function revertAll() {
   paintBase(); paintBoxes(); renderList(); updateDirty();
   if (S.sel !== null) loadEditor(S.items.find(i => i.id === S.sel) || {});
   foot('已还原为原图');
+  persistNow();
 }
 
 function resetItem() {
@@ -445,6 +644,7 @@ function resetItem() {
   if (it) loadEditor(it);
   paintBoxes(); renderList(); updateDirty();
   foot(`已重置第 ${id + 1} 项`);
+  persistSoon();
 }
 
 /* ---------------------------------------------------------------- 吸色 */
@@ -745,6 +945,7 @@ $('btnFontReload').addEventListener('click', async () => {
 $('btnResetItem').addEventListener('click', resetItem);
 $('btnRevert').addEventListener('click', revertAll);
 $('btnClearAll').addEventListener('click', revertAll);
+$('btnClose').addEventListener('click', closeImage);
 $('btnExport').addEventListener('click', exportImage);
 $('btnApplyAll').addEventListener('click', async () => {
   if (S.resultMode) {
@@ -825,7 +1026,15 @@ window.addEventListener('resize', () => { if (S.W) applyView(); });
   show($('emptyState'), true);
   show($('editorCard'), false);
   show($('overviewCard'), false);
+  show($('btnClose'), false);
   show($('warnBox'), false);
+
+  // 离开页面前把工作区落盘，切模块/刷新回来能接着改
+  window.addEventListener('pagehide', () => { persistNow(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') persistNow();
+  });
+
   try {
     const h = await fetch('/api/health').then(r => r.json());
     S.backend = h.ocr_backend;
@@ -840,6 +1049,14 @@ window.addEventListener('resize', () => { if (S.W) applyView(); });
     foot('就绪 · 拖入图片开始');
   } catch (err) {
     status('无法连接后端服务', 'err', esc(err.message));
+  }
+
+  // 有上次的工作区就自动接上（放在最后，避免被上面的状态文案覆盖）
+  try {
+    const restored = await restoreWorkspace();
+    if (!restored) foot('就绪 · 拖入图片开始');
+  } catch (err) {
+    console.error('恢复工作区异常', err);
   }
 })();
 

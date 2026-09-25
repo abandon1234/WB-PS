@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图片文字处理工具 · OCR 无痕编辑</title>
-<link rel="stylesheet" href="/static/shell.css?v=3.0">
-<link rel="stylesheet" href="/static/style.css?v=3.0">
+<link rel="stylesheet" href="/static/shell.css?v=3.1">
+<link rel="stylesheet" href="/static/style.css?v=3.1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%237ee04a'/><text x='50' y='72' font-size='62' text-anchor='middle' fill='%230a1503' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
@@ -32,6 +32,11 @@
     <button class="btn" id="btnRevert" disabled title="丢弃所有修改，回到原图">
       <svg viewBox="0 0 24 24" class="ic"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       还原
+    </button>
+
+    <button class="btn ghost" id="btnClose" hidden title="关闭当前图片，同时清掉本机保存的编辑状态">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+      关闭图片
     </button>
 
     <div class="split">
@@ -251,8 +256,9 @@
   </main>
 </div>
 
-<script src="/static/store.js?v=3.0"></script>
-<script src="/static/shell.js?v=3.0"></script>
-<script src="/static/app.js?v=3.0"></script>
+<script src="/static/store.js?v=3.1"></script>
+<script src="/static/shell.js?v=3.1"></script>
+<script src="/static/workspace.js?v=3.1"></script>
+<script src="/static/app.js?v=3.1"></script>
 </body>
 </html>

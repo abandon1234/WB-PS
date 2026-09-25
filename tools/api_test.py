@@ -41,6 +41,17 @@ def get(path: str) -> dict:
         return json.loads(r.read().decode("utf-8"))
 
 
+def get_raw(path: str, timeout: int = 30):
+    """返回 (状态码, 原始字节)，失败不抛异常。"""
+    try:
+        with OPENER.open(f"{BASE}{path}", timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except Exception as exc:                  # noqa: BLE001
+        return "ERR", str(exc).encode()
+
+
 def post_json(path: str, payload: dict, timeout: int = 180) -> dict:
     req = urllib.request.Request(
         f"{BASE}{path}", data=json.dumps(payload).encode("utf-8"),
@@ -182,8 +193,40 @@ def main() -> int:
         check("返回字体匹配结果", "matched" in info, f"stage={mi.get('stage')} iou={mi.get('iou')} family={info.get('family')}")
         check("返回笔画校准结果", "stroke" in info, f"target={si.get('target')} rendered={si.get('rendered')}")
 
-    # 5. 导出
-    print("\n[5] 应用与导出")
+    # 5. 断点续做（切页回来后靠这两个接口恢复）
+    print("\n[5] 断点续做接口")
+    if sid:
+        si = get(f"/api/session/{sid}")
+        check("会话可读回", si.get("session_id") == sid)
+        check("读回的识别结果条数一致", len(si.get("items") or []) == len(items),
+              f"{len(si.get('items') or [])} / {len(items)}")
+        check("读回含尺寸与文件名",
+              all(k in si for k in ("items", "width", "height", "count", "name")),
+              f"{si.get('width')}x{si.get('height')} · {si.get('name')}")
+
+        st404, _ = get_raw("/api/session/not-a-real-session")
+        check("不存在的会话 → 404", st404 == 404, f"HTTP {st404}")
+
+        if items:
+            payload = {
+                "session_id": sid,
+                "edits": {str(items[0]["id"]): {"text": "批量预览一"},
+                          "99999999": {"text": "对不上的项"}},
+            }
+            if len(items) > 1:
+                payload["edits"][str(items[1]["id"])] = {"text": "批量预览二"}
+            batch = post_json("/api/preview-batch", payload)
+            got = batch.get("items") or []
+            want = min(2, len(items))
+            check("批量预览返回补丁", len(got) == want, f"{len(got)} 条")
+            check("批量补丁可解码",
+                  all(str(g.get("patch", "")).startswith("data:image/png;base64,") for g in got))
+            check("对不上的 id 被跳过", len(got) == want, f"{len(got)} 条")
+    else:
+        skip("断点续做接口", "未取得 session_id")
+
+    # 6. 导出
+    print("\n[6] 应用与导出")
     edits = {}
     if items:
         edits[str(items[0]["id"])] = {"text": "导出测试文案 V3.0"}
@@ -201,7 +244,7 @@ def main() -> int:
           hd.get("Content-Disposition", ""))
 
     # 6. 异常处理
-    print("\n[6] 错误处理")
+    print("\n[7] 错误处理")
     try:
         post_json("/api/preview", {"session_id": "not-exist", "id": 0, "edit": {}})
         check("无效会话被拒绝", False)
@@ -219,7 +262,7 @@ def main() -> int:
         check("无效文字框被拒绝", False, str(exc))
 
     # 7. 自定义字体目录
-    print("\n[7] 自定义字体目录")
+    print("\n[8] 自定义字体目录")
     try:
         fu = get("/api/fonts/user")
         check("返回字体目录路径", os.path.isdir(fu.get("dir", "")), fu.get("dir"))
