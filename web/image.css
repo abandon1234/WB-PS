@@ -40,6 +40,15 @@
 .dz-inner p { font-size: 12.5px; color: var(--text); }
 .dz-inner span { font-size: 11px; color: var(--text-3); display: block; margin-top: 3px; }
 
+/* 该工具不需要参照图时的说明（自由生成） */
+.ref-note {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 11px 12px; border-radius: var(--r-sm);
+  border: 1px dashed var(--border-2); background: rgba(255, 255, 255, .015);
+  font-size: 12px; line-height: 1.6; color: var(--text-3);
+}
+.ref-note .ic { color: var(--accent); margin-top: 2px; opacity: .8; }
+
 .ref-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 10px; }
 .ref-thumb {
   position: relative; aspect-ratio: 1; border-radius: var(--r-xs);
@@ -155,6 +164,13 @@
 
 /* 加载动画 */
 .gen-visual { position: relative; width: 108px; height: 108px; margin-bottom: 8px; }
+/* 光环背后加一层呼吸的辉光，避免纯描边显得单薄 */
+.gen-visual::before {
+  content: ''; position: absolute; inset: -34%; border-radius: 50%;
+  background: radial-gradient(circle, rgba(126, 224, 74, .16), rgba(63, 191, 143, .05) 52%, transparent 70%);
+  animation: glow 2.4s ease-in-out infinite;
+}
+@keyframes glow { 0%, 100% { opacity: .45; transform: scale(.92); } 50% { opacity: 1; transform: scale(1.06); } }
 .ring {
   position: absolute; inset: 0; border-radius: 50%;
   border: 2px solid transparent;
@@ -171,14 +187,35 @@
   border-radius: 20px; padding: 3px 12px; margin-top: 4px;
 }
 .elapsed b { color: var(--accent); font-weight: 700; }
-.sk-grid { display: flex; gap: 10px; margin-top: 22px; flex-wrap: wrap; justify-content: center; }
+
+/* 骨架屏：尺寸跟随所选比例，底色走青绿渐变 + 旋转柔光扫过 */
+.sk-grid { display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap; justify-content: center; }
 .sk {
-  width: 138px; height: 138px; border-radius: var(--r);
-  background: linear-gradient(100deg, #141414 20%, #1d1d1d 40%, #141414 60%);
-  background-size: 220% 100%; animation: sk 1.35s linear infinite;
-  border: 1px solid var(--border);
+  position: relative; overflow: hidden;
+  border-radius: var(--r);
+  border: 1px solid rgba(126, 224, 74, .17);
+  background: linear-gradient(115deg,
+    #101210 0%, #16201a 20%, rgba(126, 224, 74, .22) 42%,
+    rgba(63, 191, 143, .18) 56%, #16201a 78%, #101210 100%);
+  background-size: 260% 100%;
+  animation: skSweep 2.2s linear infinite;
+  box-shadow: inset 0 0 46px rgba(126, 224, 74, .06);
 }
-@keyframes sk { to { background-position: -220% 0; } }
+.sk::before {
+  content: ''; position: absolute; inset: -46%; pointer-events: none;
+  background: conic-gradient(from 0deg,
+    transparent 0deg, rgba(126, 224, 74, .17) 66deg, transparent 148deg,
+    rgba(63, 191, 143, .15) 236deg, transparent 316deg);
+  animation: skSpin 3.6s linear infinite;
+}
+.sk::after {
+  content: '✦'; position: absolute; inset: 0;
+  display: grid; place-items: center;
+  font-size: 19px; color: rgba(126, 224, 74, .55);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes skSweep { to { background-position: -260% 0; } }
+@keyframes skSpin { to { transform: rotate(360deg); } }
 
 /* 错误 */
 .err-card {
@@ -319,6 +356,11 @@
   border-top: 1px solid var(--border);
 }
 .pcard-time { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pcard-tool {
+  font-size: 10.5px; color: var(--accent);
+  border: 1px solid var(--accent-line); background: var(--accent-dim);
+  border-radius: 20px; padding: 1px 7px; white-space: nowrap;
+}
 .pcard-foot .acts { margin-left: auto; display: flex; gap: 3px; }
 .icon-act {
   width: 26px; height: 26px; border-radius: var(--r-xs);

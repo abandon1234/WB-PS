@@ -26,40 +26,85 @@ function fmtTime(ts) {
 }
 
 /* ---------------------------------------------------------------- 工具定义 */
+/* 四个工具不是换个标题而已：各自有不同的参照图要求、默认尺寸，
+   以及一段会拼进提示词的工具指令（wrap）——这样出来的画面才会真的不一样。 */
 const TOOLS = [
   {
     id: 'create', name: '自由生成', icon: '#i-spark',
     title: 'AI 图片生成',
-    desc: '用一段提示词直接生成全新画面。描述越具体越容易得到想要的效果：主体 + 场景 + 风格 + 光线。',
-    maxRef: 4, needRef: false,
+    desc: '纯文生图：用一段提示词直接生成全新画面，不依赖任何参照图。描述越具体越容易得到想要的效果：主体 + 场景 + 风格 + 光线。',
+    refs: { min: 0, max: 0 },
+    size: '1024x1024',
+    wrap: (p) => p,
     placeholder: '描述你想生成的画面…\n例如：生成一个小狗，坐在草地上，阳光明媚，高清摄影风格',
     chips: ['生成一个小狗', '未来城市夜景，赛博朋克风格，霓虹灯', '极简扁平插画，女孩在窗边看书', '水墨风格的远山与孤舟'],
+    hints: ['描述越具体越准：主体 + 场景 + 风格 + 光线',
+            '提示词原样发送，不做任何改写',
+            '要基于已有图片生成？用左侧「图像融合」或「人物写真」'],
+    note: '自由生成是纯文生图，不需要参照图。要基于已有图片生成，请用「图像融合」「人物写真」或「商品图生成」。',
   },
   {
     id: 'combine', name: '图像融合', icon: '#i-layers',
     title: '图像融合',
-    desc: '上传主体图，把它融入你描述的全新场景、背景与光线里。可一次上传多张作为参考，多张会先合成为一张拼图再发送。',
-    maxRef: 4, needRef: true,
+    desc: '把参照图里的主体融入你描述的全新场景、背景与光线。可上传 1~4 张作为参考，主体外观会尽量保持一致。',
+    refs: { min: 1, max: 4 },
+    size: 'auto',
+    wrap: (p) => '把参照图中的主体自然地融入以下场景，保持主体的外观与特征一致：\n' + p
+      + '\n要求：光照、阴影、色温与场景保持统一，主体边缘自然，不要出现拼贴或抠图痕迹。',
     placeholder: '描述目标场景…\n例如：把主体放到海边日落场景中，柔和逆光，写实摄影风格',
     chips: ['把主体放到海边日落场景中', '换成纯白背景的电商主图', '融入未来城市霓虹街头', '放进原木桌面的静物场景'],
+    hints: ['先上传 1~4 张参照图（多张会更贴近你想要的样子）',
+            '提示词只写「要去哪里」，不必再描述主体长什么样',
+            '光照与阴影会自动与新场景统一'],
+    note: '',
   },
   {
     id: 'portrait', name: '人物写真', icon: '#i-person',
     title: '人物写真',
-    desc: '以参照图的人像为基准，生成新的写真风格与场景，保留人物特征。',
-    maxRef: 1, needRef: true,
+    desc: '以参照图的人像为基准生成新的写真，尽量保留人物身份特征（五官、发型、气质）。默认输出竖版。',
+    refs: { min: 1, max: 1 },
+    size: '1024x1536',
+    wrap: (p) => '以参照图中人物的五官、发型与气质为准，生成一张新的写真照片：\n' + p
+      + '\n要求：保持人物身份一致，不要改变面部特征；肤质自然，避免过度磨皮。',
     placeholder: '描述想要的写真风格…\n例如：日系胶片质感，浅景深，窗边自然光',
     chips: ['日系胶片质感，浅景深', '正装职业照，纯灰背景', '户外逆光，暖色调'],
+    hints: ['上传 1 张清晰人像（正脸、无遮挡效果最好）',
+            '提示词写「风格 + 光线 + 场景」即可，不必重复描述长相',
+            '默认竖版 1024×1536，可用左下角切换'],
+    note: '',
   },
   {
-    id: 'product', name: '商品图', icon: '#i-box',
+    id: 'product', name: '商品图生成', icon: '#i-box',
     title: '商品图生成',
-    desc: '把商品放进干净有质感的场景，适合电商主图与详情页。',
-    maxRef: 1, needRef: true,
+    desc: '把参照图里的商品放进干净有质感的场景，输出可直接用于电商主图与详情页的画面。',
+    refs: { min: 1, max: 1 },
+    size: '1024x1024',
+    wrap: (p) => '把参照图中的商品放进下面的场景，生成一张电商商品图：\n' + p
+      + '\n要求：商品主体清晰完整、边缘干净、比例准确，不改变商品外观与颜色；'
+      + '背景简洁有质感，画面中不要出现文字、水印或多余道具。',
     placeholder: '描述商品与场景…\n例如：大理石台面，柔和顶光，极简高级感',
     chips: ['大理石台面，柔和顶光', '纯白背景无阴影', '原木与绿植的自然场景'],
+    hints: ['上传 1 张商品图（主体完整、边缘干净）',
+            '提示词写「台面材质 + 光线 + 氛围」最有效',
+            '输出会自动避免文字与水印'],
+    note: '',
   },
 ];
+
+/** 「1~4 张」这样的文案 */
+function refRange(t) {
+  const { min, max } = t.refs;
+  if (max === 0) return '不需要';
+  return min === max ? `${min} 张` : `${min}~${max} 张`;
+}
+
+/** 显隐控制：同时写 hidden 与 inline display。
+    只设 hidden 不够——组件自带的 display 声明会压过浏览器默认的 [hidden]{display:none}。 */
+function show(el, on) {
+  if (!el) return;
+  el.hidden = !on;
+  el.style.display = on ? '' : 'none';
+}
 
 const SIZES = [
   { v: '1024x1024', label: '1024×1024', hint: '正方形' },
@@ -72,7 +117,7 @@ const COUNTS = [1, 2, 3, 4];
 /* ---------------------------------------------------------------- 状态 */
 const S = {
   tool: TOOLS[0],
-  size: '1024x1024',
+  size: TOOLS[0].size,
   count: 1,
   refs: [],                 // [{file, url}]
   status: null,
@@ -83,7 +128,8 @@ const S = {
   timer: null,
   startedAt: 0,
   controller: null,
-  lastPrompt: '',
+  lastPrompt: '',        // 用户输入的
+  lastSent: '',          // 真正发给模型的（含工具指令）
   lastMeta: {},
   library: [],              // 作品库列表
   search: '',
@@ -104,8 +150,7 @@ function toast(msg, kind = '') {
   }, 2800);
 }
 
-async function api(url, opt = {}) {
-  const r = await fetch(url, { credentials: 'same-origin', ...opt });
+async function api(url, opt = {}) {  const r = await fetch(url, { credentials: 'same-origin', ...opt });
   let body = null;
   try { body = await r.json(); } catch (_) { /* 非 JSON */ }
   if (!r.ok) {
@@ -129,8 +174,19 @@ async function api(url, opt = {}) {
   bindProjects();
   bindLightbox();
 
+  // hash 路由先挂上：后面任何一步渲染出错，深链和侧栏高亮都不该跟着失效
+  window.addEventListener('hashchange', applyHash);
+  applyHash();
+
   $('genKey').textContent = modKey + '3';
   $('prompt').placeholder = S.tool.placeholder;
+  try {
+    applySizeLabel();
+    renderRefs();
+    renderToolState();
+  } catch (e) {
+    console.error('工具初始渲染失败', e);
+  }
 
   try {
     S.status = await api('/api/image/status');
@@ -140,28 +196,40 @@ async function api(url, opt = {}) {
   if (!S.status.ready) {
     toast(`后台未就绪：${S.status.message}`, 'warn');
   }
-
-  // 视图由 URL hash 决定：#projects 进作品库，#<工具id> 选对应工具
-  applyHash();
-  window.addEventListener('hashchange', applyHash);
 })();
 
 /* ================================================================ 工具切换 */
 function selectTool(id) {
   const t = TOOLS.find(x => x.id === id);
   if (!t) return;
-  // 从作品库点工具时要能切回生成视图
   if (S.view !== 'generate') switchView('generate', t.id);
 
+  const changed = t.id !== S.tool.id;
+  const hadResult = S.images.length > 0;
   S.tool = t;
+
   $('toolTitle').textContent = t.title;
   $('toolDesc').textContent = t.desc;
   $('prompt').placeholder = t.placeholder;
-  // 超出新工具上限的参照图自动裁掉
-  while (S.refs.length > t.maxRef) removeRef(S.refs.length - 1);
+
+  // 每个工具自带默认尺寸：人像竖版、融合沿用参照图比例
+  S.size = t.size;
+  applySizeLabel();
+
+  // 参照图数量不符合新工具要求就清掉，别把「不需要参照图」的图悄悄带过去
+  while (S.refs.length > t.refs.max) removeRef(S.refs.length - 1, true);
   renderToolChips();
+  renderRefs();
+  renderToolState();
   closePop();
   setHash(t.id);
+
+  // 切工具等于换个工作台：上一张结果已自动存进作品库，舞台回到该工具自己的空态。
+  // 否则从「自由生成」切到「人物写真」会看到同一张图，容易以为四个工具没区别。
+  if (changed) {
+    resetStage();
+    if (hadResult) toast('已切换到「' + t.name + '」，上一张结果已存入作品库', 'ok');
+  }
 }
 
 /* ================================================================ 视图与深链 */
@@ -210,9 +278,14 @@ function bindRefs() {
 }
 
 function addRefs(files) {
-  const room = S.tool.maxRef - S.refs.length;
+  const t = S.tool;
+  if (t.refs.max === 0) {
+    toast(`「${t.name}」不需要参照图，要基于图片生成请换「图像融合」等工具`, 'warn');
+    return;
+  }
+  const room = t.refs.max - S.refs.length;
   if (room <= 0) {
-    toast(`「${S.tool.name}」最多 ${S.tool.maxRef} 张参照图`, 'warn');
+    toast(`「${t.name}」最多 ${t.refs.max} 张参照图`, 'warn');
     return;
   }
   const accepted = [];
@@ -226,34 +299,98 @@ function addRefs(files) {
   renderRefs();
 }
 
-function removeRef(i) {
+function removeRef(i, silent) {
   const r = S.refs[i];
   if (!r) return;
   URL.revokeObjectURL(r.url);
   S.refs.splice(i, 1);
-  renderRefs();
+  if (!silent) renderRefs();
 }
 
 function renderRefs() {
   const box = $('refStrip');
-  $('refCount').textContent = `${S.refs.length}/${S.tool.maxRef}`;
-  if (!S.refs.length) { box.hidden = true; box.innerHTML = ''; return; }
-  box.hidden = false;
-  box.innerHTML = S.refs.map((r, i) => `
-    <div class="ref-thumb" data-i="${i}">
-      <img src="${r.url}" alt="参照图 ${i + 1}">
-      <span class="idx">${i + 1}</span>
-      <button title="移除"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
-    </div>`).join('');
-  box.querySelectorAll('.ref-thumb').forEach(el => {
-    el.querySelector('button').addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      removeRef(+el.dataset.i);
+  const t = S.tool;
+  $('refCount').textContent = t.refs.max === 0 ? '无需' : `${S.refs.length}/${t.refs.max}`;
+  if (!S.refs.length) { box.hidden = true; box.innerHTML = ''; }
+  else {
+    box.hidden = false;
+    box.innerHTML = S.refs.map((r, i) => `
+      <div class="ref-thumb" data-i="${i}">
+        <img src="${r.url}" alt="参照图 ${i + 1}">
+        <span class="idx">${i + 1}</span>
+        <button title="移除"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+      </div>`).join('');
+    box.querySelectorAll('.ref-thumb').forEach(el => {
+      el.querySelector('button').addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        removeRef(+el.dataset.i);
+      });
     });
-  });
+  }
+  renderRefZone();
+}
+
+/** 不同工具的参照图区不一样：自由生成干脆不显示上传框 */
+function renderRefZone() {
+  const t = S.tool;
+  const noRef = t.refs.max === 0;
+  show($('dropzone'), !noRef);
+  show($('refNote'), noRef);
+  if (noRef) $('refNoteText').textContent = t.note || '该工具不需要参照图。';
+  else {
+    const label = '拖入或点击上传图片';
+    const hint = `JPG、PNG、WebP · 单张不超过 8MB · 需要 ${refRange(t)}`;
+    const inner = $('dropzone').querySelector('.dz-inner');
+    if (inner) {
+      inner.querySelector('p').textContent = label;
+      inner.querySelector('span').textContent = hint;
+    }
+  }
+}
+
+/** 舞台空态按工具改写：缺参照图时直接把话说清楚 */
+function renderToolState() {
+  const t = S.tool;
+  const need = t.refs.min > 0;
+  const missing = need && !S.refs.length;
+  $('emptyTitle').textContent = missing ? `请先上传参照图（${refRange(t)}）`
+    : (need ? '参照图已就绪' : '准备就绪');
+  $('emptyDesc').textContent = missing
+    ? '这个工具以参照图为基础，没有参照图无法开始'
+    : (need ? '写下提示词，点「Generate」即可开始'
+            : '写下提示词，点「Generate」即可开始');
+  $('emptyHints').innerHTML = t.hints.map(h => `<li>${esc(h)}</li>`).join('');
+}
+
+/** 清空舞台上的结果视图（结果本身已存进作品库，不会丢） */
+function resetStage() {
+  S.images = [];
+  S.current = 0;
+  S.lastMeta = {};
+  S.lastPrompt = '';
+  S.lastSent = '';
+  $('resultImg').removeAttribute('src');
+  showState('stateEmpty');
+  renderToolState();
+}
+
+/** 骨架屏尺寸跟着所选比例走，让等待期的占位和将要出现的画面一致 */
+function skeletonSize() {
+  if (S.size === 'auto') return { w: 168, h: 168 };
+  const m = /^(\d+)x(\d+)$/.exec(S.size);
+  if (!m) return { w: 168, h: 168 };
+  const a = Number(m[1]), b = Number(m[2]);
+  const long = 172;
+  return a >= b ? { w: long, h: Math.round(long * b / a) }
+                : { w: Math.round(long * a / b), h: long };
 }
 
 /* ================================================================ 提示词 */
+function applySizeLabel() {
+  const s = SIZES.find(x => x.v === S.size);
+  $('pillSizeText').textContent = s ? s.label : S.size;
+}
+
 function bindPrompt() {
   const ta = $('prompt');
   ta.addEventListener('keydown', (e) => {
@@ -330,8 +467,7 @@ function bindPills() {
   })), '尺寸'));
   sz.addEventListener('picked', (e) => {
     S.size = e.detail;
-    $('pillSizeText').textContent =
-      (SIZES.find(s => s.v === S.size) || {}).label || S.size;
+    applySizeLabel();
   });
   ct.addEventListener('click', () => openPop(ct, COUNTS.map(n => ({
     v: String(n), label: `${n} 张`, on: n === S.count,
@@ -407,29 +543,38 @@ async function composeRefs(refs) {
 
 async function generate() {
   if (S.busy) return;
+  const t = S.tool;
   const prompt = $('prompt').value.trim();
   if (!prompt) { toast('请先填写提示词', 'err'); $('prompt').focus(); return; }
   if (S.status && !S.status.ready) {
     toast(`后台未就绪：${S.status.message}`, 'err');
     return;
   }
-  if (S.tool.needRef && !S.refs.length) {
-    toast(`「${S.tool.name}」需要至少上传 1 张参照图`, 'err');
+  if (S.refs.length < t.refs.min) {
+    toast(`「${t.name}」需要 ${refRange(t)}参照图，当前 ${S.refs.length} 张`, 'err');
+    renderToolState();
     return;
   }
 
+  // 每个工具往提示词里拼自己的指令，这样同样的输入也会得到不同的结果
+  const finalPrompt = t.wrap ? t.wrap(prompt) : prompt;
   S.lastPrompt = prompt;
+  S.lastSent = finalPrompt;
+
   setBusy(true);
   showState('stateLoading');
   startTimer();
   $('loadingTitle').textContent = S.refs.length ? '正在按参照图生成…' : '正在生成…';
   $('loadingSub').textContent =
-    `模型 ${S.status?.model || '—'} · ${S.size === 'auto' ? '自动尺寸' : S.size} · ${S.count} 张`
-    + (S.refs.length > 1 ? ` · 已把 ${S.refs.length} 张参照图合成为拼图` : '');
-  $('skGrid').innerHTML = Array.from({ length: S.count }, () => '<div class="sk"></div>').join('');
+    `${t.name} · 模型 ${S.status?.model || '—'} · ${S.size === 'auto' ? '自动尺寸' : S.size} · ${S.count} 张`
+    + (S.refs.length ? ` · ${S.refs.length} 张参照图` : '');
+  const sk = skeletonSize();
+  $('skGrid').innerHTML = Array.from({ length: S.count },
+    () => `<div class="sk" style="width:${sk.w}px;height:${sk.h}px"></div>`).join('');
 
   const fd = new FormData();
-  fd.append('prompt', prompt);
+  fd.append('prompt', finalPrompt);
+  fd.append('tool', t.id);
   fd.append('size', S.size);
   fd.append('n', String(S.count));
   S.refs.forEach((r, i) =>
@@ -517,11 +662,17 @@ async function autoSave(res) {
 /* ================================================================ 结果 */
 function renderResult(res) {
   showState(null);
+  $('resTool').textContent = res.tool_name || S.tool.name;
   $('resSize').textContent = `尺寸 ${res.size || S.size}`;
   $('resModel').textContent = res.model || '—';
   $('resElapsed').textContent = `耗时 ${res.elapsed}s`;
   $('resRef').hidden = !res.used_reference;
   $('resPrompt').textContent = S.lastPrompt;
+  // 有加工具指令时把真正发出去的内容也亮出来，避免「四个工具看起来一样」的困惑
+  const sent = S.lastSent || '';
+  const wrapped = !!sent && sent !== S.lastPrompt;
+  $('resSentWrap').hidden = !wrapped;
+  if (wrapped) $('resSent').textContent = sent;
   $('resSaved').hidden = true;
   $('btnFav').classList.remove('on');
 
@@ -684,6 +835,7 @@ function renderLibrary() {
       </div>
       <div class="pcard-foot">
         <span class="pcard-time">${fmtTime(r.createdAt)}</span>
+        ${r.toolName ? `<span class="pcard-tool">${esc(r.toolName)}</span>` : ''}
         <span class="acts">
           <button class="icon-act" data-act="down" title="下载"><svg class="ic" viewBox="0 0 24 24"><use href="#i-download"/></svg></button>
           <button class="icon-act danger" data-act="del" title="删除"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg></button>

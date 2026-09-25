@@ -325,11 +325,15 @@ def t_generate(c: Client, args) -> None:
     print("\n[8] 参照图生图（真实生成）")
     ref = open(out, "rb").read()
     st, res = c.post_form("/api/image/generate",
-                          {"prompt": "把画面主色调改成蓝色", "size": "1024x1024", "n": "1"},
+                          {"prompt": "把画面主色调改成蓝色", "size": "1024x1024", "n": "1",
+                           "tool": "combine"},
                           files=[("references", "ref.png", ref, "image/png")])
     if st == 200 and res.get("images"):
         check("单参照图成功", res.get("used_reference") is True,
               f"耗时 {res.get('elapsed')}s")
+        check("回显工具标识", res.get("tool") == "combine", str(res.get("tool")))
+        check("回显工具展示名", res.get("tool_name") == "图像融合",
+              str(res.get("tool_name")))
     else:
         check("单参照图成功", False,
               json.dumps((res or {}).get("detail"), ensure_ascii=False)[:300])

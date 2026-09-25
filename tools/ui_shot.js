@@ -565,6 +565,172 @@ const SEED = `(async () => {
         console.log(`  · 找不到 ${card}，跳过改字页流程测试`);
       }
 
+      // ---- 四个工具必须是真的不一样：拦下请求看 payload，不消耗额度 ----
+      console.log('\n[工具差异化]');
+      await cdp.goto(`${BASE}/image`);
+      await cdp.waitFor(`!!document.getElementById('btnGenerate')`, 20000, '生成页');
+      await sleep(600);
+
+      // 把 /api/image/generate 换成假的成功响应：既能跑完整渲染链路，又不花额度
+      await cdp.evaluate(`(() => {
+        window.__cap = null;
+        window.__origFetch = window.fetch;
+        window.fetch = function (url, opt) {
+          if (String(url).indexOf('/api/image/generate') >= 0) {
+            const fd = opt && opt.body;
+            window.__cap = {
+              prompt: fd && fd.get ? fd.get('prompt') : null,
+              tool: fd && fd.get ? fd.get('tool') : null,
+              size: fd && fd.get ? fd.get('size') : null,
+              refs: fd && fd.getAll ? fd.getAll('references').length : 0,
+            };
+            const cv = document.createElement('canvas');
+            cv.width = 320; cv.height = 320;
+            const ct = cv.getContext('2d');
+            const g = ct.createLinearGradient(0, 0, 320, 320);
+            g.addColorStop(0, '#7ee04a'); g.addColorStop(1, '#2f8f5b');
+            ct.fillStyle = g; ct.fillRect(0, 0, 320, 320);
+            const names = { create: '自由生成', combine: '图像融合',
+                            portrait: '人物写真', product: '商品图生成' };
+            const payload = {
+              ok: true,
+              images: [{ data_url: cv.toDataURL('image/png'), url: '', bytes: 1234,
+                         revised_prompt: '' }],
+              elapsed: 1.2, used_reference: window.__cap.refs > 0,
+              reference_count: window.__cap.refs,
+              model: 'gpt-image-2', size: window.__cap.size, count: 1,
+              tool: window.__cap.tool, tool_name: names[window.__cap.tool] || '',
+              provider: { name: 'stub', model: 'gpt-image-2' },
+            };
+            return Promise.resolve(new Response(JSON.stringify(payload),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          }
+          return window.__origFetch.apply(this, arguments);
+        };
+        return true;
+      })()`);
+
+      const toolState = () => cdp.evaluate(`(() => {
+        const q = (s) => document.querySelector(s);
+        return {
+          resultHidden: q('#result').hidden,
+          emptyVisible: !q('#stateEmpty').hidden,
+          dzVisible: !q('#dropzone').hidden,
+          noteVisible: !q('#refNote').hidden,
+          noteText: q('#refNoteText').textContent,
+          sizeText: q('#pillSizeText').textContent,
+          refCount: q('#refCount').textContent,
+          emptyTitle: q('#emptyTitle').textContent,
+        };
+      })()`);
+
+      async function runTool(key, needRef) {
+        await cdp.evaluate(`location.hash = '#${key}', 1`);
+        await sleep(450);
+        await cdp.shot(`ui_14_tool_${key}.png`);        // 切过去、还没上传参照图的样子
+        if (needRef) { await setFile(cdp, '#refInput', card); await sleep(600); }
+        await setInput(cdp, '#prompt', '统一的测试提示词');
+        await click(cdp, '#btnGenerate');
+        await sleep(1300);
+        return cdp.evaluate(`(() => {
+          const q = (s) => document.querySelector(s);
+          return {
+            cap: window.__cap,
+            tool: q('#resTool').textContent,
+            sentShown: !q('#resSentWrap').hidden,
+            sent: q('#resSent').textContent,
+            resultVisible: !q('#result').hidden,
+            saved: q('#resSaved').textContent,
+          };
+        })()`);
+      }
+
+      // 自由生成：不需要参照图、原样发送
+      await cdp.evaluate(`location.hash = '#create', 1`);
+      await sleep(600);
+      const stCreate = await toolState();
+      check('自由生成：隐藏上传区并说明原因',
+        !stCreate.dzVisible && stCreate.noteVisible, stCreate.noteText.slice(0, 24) + '…');
+      check('自由生成：参照图计数显示「无需」', stCreate.refCount === '无需', stCreate.refCount);
+      check('自由生成：默认尺寸 1024×1024', stCreate.sizeText === '1024×1024', stCreate.sizeText);
+
+      const rCreate = await runTool('create', false);
+      check('自由生成：提示词原样发送（不加工具指令）',
+        rCreate.cap.prompt === '统一的测试提示词', JSON.stringify(rCreate.cap.prompt));
+      check('自由生成：不带参照图', rCreate.cap.refs === 0, `${rCreate.cap.refs} 张`);
+      check('自由生成：结果不显示「实际发送的提示词」', !rCreate.sentShown);
+      check('自由生成：结果标签正确', rCreate.tool === '自由生成', rCreate.tool);
+
+      // 切到图像融合：上一张结果必须被清掉
+      await cdp.evaluate(`location.hash = '#combine', 1`);
+      await sleep(600);
+      const stCombine = await toolState();
+      check('切工具后上一张结果被清空（不会误以为四个工具一样）',
+        stCombine.resultHidden && stCombine.emptyVisible);
+      check('图像融合：显示上传区', stCombine.dzVisible && !stCombine.noteVisible);
+      check('图像融合：默认尺寸走「自动」', stCombine.sizeText === '自动', stCombine.sizeText);
+      check('图像融合：缺参照图时先提示上传',
+        stCombine.emptyTitle.indexOf('参照图') >= 0, stCombine.emptyTitle);
+
+      const rCombine = await runTool('combine', true);
+      check('图像融合：提示词被加上融合指令',
+        rCombine.cap.prompt.indexOf('把参照图中的主体自然地融入') >= 0
+        && rCombine.cap.prompt.indexOf('统一的测试提示词') >= 0,
+        rCombine.cap.prompt.split('\n')[0]);
+      check('图像融合：结果区展示实际发送的提示词',
+        rCombine.sentShown && rCombine.sent.indexOf('统一') >= 0);
+
+      const rPortrait = await runTool('portrait', true);
+      check('人物写真：提示词被加上身份保持指令',
+        rPortrait.cap.prompt.indexOf('以参照图中人物的五官') >= 0,
+        rPortrait.cap.prompt.split('\n')[0]);
+      check('人物写真：默认竖版 1024×1536',
+        rPortrait.cap.size === '1024x1536', rPortrait.cap.size);
+      check('人物写真：结果标签正确', rPortrait.tool === '人物写真', rPortrait.tool);
+
+      const rProduct = await runTool('product', true);
+      check('商品图生成：提示词被加上电商主图指令',
+        rProduct.cap.prompt.indexOf('电商商品图') >= 0,
+        rProduct.cap.prompt.split('\n')[0]);
+      check('商品图生成：默认尺寸 1024×1024', rProduct.cap.size === '1024x1024', rProduct.cap.size);
+
+      const all4 = [rCreate.cap.tool, rCombine.cap.tool, rPortrait.cap.tool, rProduct.cap.tool];
+      check('四个工具下发的 tool 标识互不相同', new Set(all4).size === 4, all4.join('/'));
+      const prompts4 = [rCreate.cap.prompt, rCombine.cap.prompt,
+                        rPortrait.cap.prompt, rProduct.cap.prompt];
+      check('四个工具实际发出的提示词互不相同', new Set(prompts4).size === 4);
+
+      // ---- 骨架屏的渐变动画 ----
+      await cdp.evaluate(`(() => {
+        const q = (s) => document.querySelector(s);
+        q('#result').hidden = true;
+        q('#stateEmpty').hidden = true;
+        q('#stateError').hidden = true;
+        q('#stateLoading').hidden = false;
+        q('#skGrid').innerHTML =
+          '<div class="sk" style="width:172px;height:172px"></div>'
+          + '<div class="sk" style="width:172px;height:172px"></div>';
+        q('#elapsed').textContent = '18.6';
+        return true;
+      })()`);
+      await sleep(400);
+      const skInfo = await cdp.evaluate(`(() => {
+        const el = document.querySelector('#skGrid .sk');
+        const cs = getComputedStyle(el);
+        const bf = getComputedStyle(el, '::before');
+        return {
+          anim: cs.animationName, dur: cs.animationDuration,
+          grad: cs.backgroundImage.indexOf('linear-gradient') >= 0,
+          conic: bf.backgroundImage.indexOf('conic-gradient') >= 0,
+          anim2: bf.animationName,
+        };
+      })()`);
+      check('骨架屏：渐变扫光动画已生效',
+        skInfo.anim === 'skSweep' && skInfo.grad, `${skInfo.anim} ${skInfo.dur}`);
+      check('骨架屏：旋转柔光层已生效',
+        skInfo.conic && skInfo.anim2 === 'skSpin', skInfo.anim2);
+      await cdp.shot('ui_13_loading_gradient.png');
+
       console.log(`\n交互回归：通过 ${VERIFY_PASS.length} 项，失败 ${VERIFY_FAIL.length} 项`);
       if (VERIFY_FAIL.length) {
         console.log('失败项：' + VERIFY_FAIL.join('、'));

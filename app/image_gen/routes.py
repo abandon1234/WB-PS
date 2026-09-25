@@ -38,6 +38,15 @@ router = APIRouter(tags=["image-gen"])
 
 ALLOWED_REF_TYPES = ("image/png", "image/jpeg", "image/webp", "image/bmp")
 
+# 前端四个工具的 id → 展示名。服务端只做记录与回显，不改写提示词
+# （提示词包装放在前端，这样「实际发送了什么」对用户是可见的）
+TOOL_NAMES = {
+    "create": "自由生成",
+    "combine": "图像融合",
+    "portrait": "人物写真",
+    "product": "商品图生成",
+}
+
 
 # ------------------------------------------------------------------ 公共小件
 
@@ -97,6 +106,7 @@ async def generate_image(
     prompt: str = Form(default=""),
     size: str = Form(default=gen_config.DEFAULT_SIZE),
     n: int = Form(default=1),
+    tool: str = Form(default=""),
     timeout: int = Form(default=gen_client.DEFAULT_TIMEOUT),
     references: List[UploadFile] = File(default=[]),
 ):
@@ -128,9 +138,12 @@ async def generate_image(
         raise                                          # 让类型检查器满意
 
     # 响应里只留非敏感的模型标识，不带中转站地址
+    tool = (tool or "").strip()[:32]
     return {
         "ok": True,
         **result,
+        "tool": tool,
+        "tool_name": TOOL_NAMES.get(tool, tool or "自由生成"),
         "provider": {
             "name": provider.get("name"),
             "model": provider.get("model"),

@@ -30,6 +30,10 @@
               <span>Images</span>
               <span class="cnt" id="refCount">0/4</span>
             </div>
+            <div class="ref-note" id="refNote" hidden>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-spark"/></svg>
+              <span id="refNoteText">—</span>
+            </div>
             <label class="dropzone" id="dropzone">
               <input type="file" id="refInput" accept="image/png,image/jpeg,image/webp,image/bmp" multiple hidden>
               <div class="dz-inner">
@@ -88,13 +92,9 @@
                 <path d="M24 88l30-30 22 22 16-14 30 26" fill="none" stroke="url(#ag)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </div>
-            <h3>准备就绪</h3>
-            <p>写下提示词，或上传参照图，然后点「Generate」</p>
-            <ul class="tips">
-              <li>描述越具体越准：主体 + 场景 + 风格 + 光线</li>
-              <li>需要保持原图风格时，上传一张参照图</li>
-              <li>生成结果自动存进本机作品库，服务器不留存</li>
-            </ul>
+            <h3 id="emptyTitle">准备就绪</h3>
+            <p id="emptyDesc">写下提示词，然后点「Generate」</p>
+            <ul class="tips" id="emptyHints"></ul>
           </div>
 
           <!-- 加载态 -->
@@ -136,6 +136,7 @@
             </div>
             <div class="result-bar">
               <div class="result-meta">
+                <span class="tag accent" id="resTool">—</span>
                 <span class="tag" id="resSize">—</span>
                 <span class="tag" id="resModel">—</span>
                 <span class="tag" id="resElapsed">—</span>
@@ -156,7 +157,11 @@
               </div>
             </div>
             <div class="result-foot">
-              <div><label>本次提示词</label><p id="resPrompt">—</p></div>
+              <div><label>你输入的提示词</label><p id="resPrompt">—</p></div>
+              <div id="resSentWrap" hidden>
+                <label>实际发送给模型的提示词（已自动加上该工具的指令）</label>
+                <p id="resSent">—</p>
+              </div>
               <div id="resRevisedWrap" hidden><label>模型改写后的提示词</label><p id="resRevised">—</p></div>
             </div>
           </div>
