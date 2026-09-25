@@ -14,3 +14,7 @@ fonts/*
 
 # 图片生成模块的中转站配置：内含 API key，绝不入库
 data/
+
+# 快照 zip 是离线副本，不属于源码
+*.zip
+!samples/**/*.zip
