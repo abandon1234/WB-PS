@@ -136,6 +136,9 @@ const S = {
   favOnly: false,
   lbId: null,
   autoSave: true,
+  byTool: {},               // toolId → 该工具的独立草稿（提示词 / 参照图 / 尺寸 / 结果）
+  applied: null,            // 界面上当前生效的是哪个工具（用来判断要不要换草稿）
+  restored: 0,              // 本次从本机恢复了几份草稿
 };
 
 /* ---------------------------------------------------------------- 通用 */
@@ -164,6 +167,201 @@ async function api(url, opt = {}) {  const r = await fetch(url, { credentials: '
   return body;
 }
 
+/* ================================================================ 工具草稿
+   四个工具各留一份草稿：切走时收起来，切回时原样接上；
+   同时落到本机，刷新页面或去「无痕改字」转一圈回来也不会丢。 */
+let draftsReady = false;
+let firstHydrate = true;      // 首屏恢复不弹提示
+
+function blankDraft(t) {
+  return {
+    prompt: '', size: t.size, count: 1,
+    refs: [], images: [], current: 0,
+    lastPrompt: '', lastSent: '', meta: null,
+    recIds: [], loaded: true,
+  };
+}
+
+/** 把界面上正在编辑的东西收集成一份草稿 */
+function captureDraft() {
+  return {
+    prompt: $('prompt').value, size: S.size, count: S.count,
+    refs: S.refs, images: S.images, current: S.current,
+    lastPrompt: S.lastPrompt, lastSent: S.lastSent, meta: S.lastMeta,
+    recIds: [], loaded: true,
+  };
+}
+
+/** 把一份草稿铺回界面 */
+function applyDraft(t, d) {
+  S.size = d.size || t.size;
+  S.count = d.count || 1;
+  S.refs = d.refs || [];
+  S.images = d.images || [];
+  S.current = d.current || 0;
+  S.lastPrompt = d.lastPrompt || '';
+  S.lastSent = d.lastSent || '';
+  S.lastMeta = d.meta || null;
+  $('prompt').value = d.prompt || '';
+  applySizeLabel();
+  $('pillCountText').textContent = `${S.count} 张`;
+}
+
+/** 给界面渲染用的元信息：去掉 images —— 那是几 MB 的 base64，草稿里不能留 */
+function metaLite(res) {
+  return {
+    tool_name: res.tool_name || S.tool.name,
+    model: res.model || '',
+    size: res.size || S.size,
+    elapsed: res.elapsed,
+    used_reference: !!res.used_reference,
+    revised: (res.images && res.images[0] && res.images[0].revised_prompt)
+      || res.revised || '',
+  };
+}
+
+const refsSigs = {};
+let saveTimer = null;
+let saveRefsDirty = false;
+
+/** 状态有变：同步内存快照，并排一次落盘（合并连续输入） */
+function touch(withRefs = false) {
+  if (!S.tool) return;
+  S.byTool[S.tool.id] = captureDraft();
+  saveRefsDirty = saveRefsDirty || withRefs;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushDraft, 350);
+}
+
+function flushDraft() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  const withRefs = saveRefsDirty;
+  saveRefsDirty = false;
+  persistDraft(S.tool, withRefs);
+}
+
+function persistDraft(tool, withRefs) {
+  if (!window.ToolCache || !tool) return;
+  const d = (S.applied === tool.id) ? captureDraft() : S.byTool[tool.id];
+  if (!d) return;
+  S.byTool[tool.id] = d;
+
+  ToolCache.putState({
+    tool: tool.id,
+    prompt: d.prompt || '',
+    size: d.size,
+    count: d.count,
+    current: d.current || 0,
+    lastPrompt: d.lastPrompt || '',
+    lastSent: d.lastSent || '',
+    meta: d.meta || null,
+    recIds: (d.images || []).map(im => im.recId).filter(Boolean),
+    savedAt: Date.now(),
+  }).catch(() => { /* 本机存储不可用不影响生成 */ });
+
+  if (!withRefs) return;
+  // 参照图字节大，只在内容真的变了才重写
+  const sig = (d.refs || []).map(r => `${r.file?.name || ''}:${r.file?.size || 0}`).join('|');
+  if (refsSigs[tool.id] === sig) return;
+  refsSigs[tool.id] = sig;
+  ToolCache.putRefs(tool.id, d.refs || []).catch(() => {});
+}
+
+/** 本机草稿 → 内存：参照图与上一张结果都在本机，需要时再异步补齐 */
+async function hydrateDraft(t) {
+  const d = S.byTool[t.id];
+  if (!d || d.loaded) return;
+  // 首次进入的那个工具静默恢复——启动时已经有一条「已恢复上次编辑的内容」了，
+  // 再把参照图/结果图各报一遍会刷出一屏 toast
+  const silent = firstHydrate;
+  firstHydrate = false;
+  d.loaded = true;
+  let ok = false;
+  try {
+    if (!d.refs.length && window.ToolCache) {
+      const rows = await ToolCache.getRefs(t.id);
+      d.refs = (rows || []).slice(0, t.refs.max).map(r => {
+        const file = new File([r.buf], r.name || 'ref.png',
+          { type: r.type || 'image/png' });
+        return { file, url: URL.createObjectURL(file) };
+      });
+    }
+    if (!d.images.length && (d.recIds || []).length && window.ImgStore) {
+      const out = [];
+      for (const id of d.recIds) {
+        const rec = await ImgStore.get(id).catch(() => null);
+        if (!rec || !rec.full) continue;
+        out.push({
+          data_url: '', url: ImgStore.bufferToURL(rec.full, rec.mime),
+          bytes: rec.bytes, recId: id, revised_prompt: rec.revised || '',
+        });
+      }
+      d.images = out;
+      d.recIds = out.map(im => im.recId);
+    }
+    ok = true;
+  } catch (e) {
+    d.loaded = false;                      // 失败了下次切过来还能再试
+    console.warn('草稿恢复失败', e);
+  }
+  if (S.applied !== t.id) return;          // 用户已经切走了，留着重填好的草稿下次用
+  // S 里现在还是空数组（applyDraft 时赋的），把补齐的内容接过去
+  if (!S.refs.length && d.refs.length) S.refs = d.refs;
+  if (!S.images.length && d.images.length) S.images = d.images;
+  renderRefs();
+  renderStage();
+  if (ok && !silent) {
+    const bits = [];
+    if (d.refs.length) bits.push('参照图');
+    if (d.images.length) bits.push('结果图');
+    if (bits.length) toast(`已恢复本机的${bits.join('与')}`, 'ok');
+  }
+}
+
+/** 启动时把四个工具的草稿读回内存（只读轻量字段，参照图等切过去时再取） */
+async function preloadDrafts() {
+  if (!window.ToolCache) return;
+  let rows = [];
+  try { rows = await ToolCache.listStates(); } catch (_) { return; }
+  for (const rec of rows || []) {
+    const t = TOOLS.find(x => x.id === rec.tool);
+    if (!t) continue;
+    const d = blankDraft(t);
+    d.prompt = rec.prompt || '';
+    d.size = rec.size || t.size;
+    d.count = rec.count || 1;
+    d.current = rec.current || 0;
+    d.lastPrompt = rec.lastPrompt || '';
+    d.lastSent = rec.lastSent || '';
+    d.meta = rec.meta || null;
+    d.recIds = Array.isArray(rec.recIds) ? rec.recIds : [];
+    d.loaded = false;                       // 参照图与结果图按需补齐
+    S.byTool[t.id] = d;
+    if (d.prompt || d.recIds.length) S.restored++;
+  }
+}
+
+/** 结果图被从作品库删掉时，各工具舞台上缓存的「上一张」也随之失效 */
+function dropResultOf(id) {
+  let hit = false;
+  for (const t of TOOLS) {
+    const d = S.byTool[t.id];
+    if (!d) continue;
+    const used = (d.recIds || []).includes(id)
+      || (d.images || []).some(im => im.recId === id);
+    if (!used) continue;
+    d.images = []; d.recIds = []; d.current = 0; d.meta = null;
+    if (t.id === S.tool.id) {
+      S.images = []; S.current = 0; S.lastMeta = null;
+      renderStage();
+    }
+    persistDraft(t, false);
+    hit = true;
+  }
+  return hit;
+}
+
 /* ================================================================ 初始化 */
 (async function init() {
   bindRefs();
@@ -176,7 +374,18 @@ async function api(url, opt = {}) {  const r = await fetch(url, { credentials: '
 
   // hash 路由先挂上：后面任何一步渲染出错，深链和侧栏高亮都不该跟着失效
   window.addEventListener('hashchange', applyHash);
+
+  // 先把四个工具的本机草稿读回内存，再决定界面该显示哪一个
+  await preloadDrafts();
+  draftsReady = true;
   applyHash();
+  if (S.restored) toast('已恢复上次编辑的内容', 'ok');
+
+  // 关页 / 切后台时立刻落盘，别指望防抖窗口能赶上
+  window.addEventListener('pagehide', flushDraft);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushDraft();
+  });
 
   $('genKey').textContent = modKey + '3';
   $('prompt').placeholder = S.tool.placeholder;
@@ -203,33 +412,29 @@ function selectTool(id) {
   const t = TOOLS.find(x => x.id === id);
   if (!t) return;
   if (S.view !== 'generate') switchView('generate', t.id);
+  if (S.applied === t.id) { setHash(t.id); return; }
 
-  const changed = t.id !== S.tool.id;
-  const hadResult = S.images.length > 0;
+  // 离开当前工具前，先把它的草稿收好（内存 + 本机），切回来才不会丢
+  if (S.applied) {
+    S.byTool[S.tool.id] = captureDraft();
+    persistDraft(S.tool, true);
+  }
+
   S.tool = t;
+  S.applied = t.id;
 
   $('toolTitle').textContent = t.title;
   $('toolDesc').textContent = t.desc;
   $('prompt').placeholder = t.placeholder;
 
-  // 每个工具自带默认尺寸：人像竖版、融合沿用参照图比例
-  S.size = t.size;
-  applySizeLabel();
-
-  // 参照图数量不符合新工具要求就清掉，别把「不需要参照图」的图悄悄带过去
-  while (S.refs.length > t.refs.max) removeRef(S.refs.length - 1, true);
+  // 每个工具有自己的提示词、自己的尺寸、自己的参照图与结果
+  applyDraft(t, S.byTool[t.id] || blankDraft(t));
   renderToolChips();
   renderRefs();
-  renderToolState();
+  renderStage();          // 该工具自己有结果就接着显示，否则回到它自己的空态
   closePop();
   setHash(t.id);
-
-  // 切工具等于换个工作台：上一张结果已自动存进作品库，舞台回到该工具自己的空态。
-  // 否则从「自由生成」切到「人物写真」会看到同一张图，容易以为四个工具没区别。
-  if (changed) {
-    resetStage();
-    if (hadResult) toast('已切换到「' + t.name + '」，上一张结果已存入作品库', 'ok');
-  }
+  hydrateDraft(t);        // 参照图与上一张结果还在本机，异步补上
 }
 
 /* ================================================================ 视图与深链 */
@@ -250,11 +455,12 @@ function switchView(v, hashKey) {
 
 /** URL hash → 界面状态。支持 /image#projects 与 /image#combine 这类深链。 */
 function applyHash() {
+  if (!draftsReady) return;      // 草稿还没读回来，别急着决定显示哪个工具
   const h = location.hash.replace(/^#/, '');
   if (h === 'projects') { switchView('projects'); return; }
   const t = TOOLS.find(x => x.id === h);
   switchView('generate', t ? t.id : null);
-  if (t) selectTool(t.id);
+  selectTool(t ? t.id : S.tool.id);    // 没有 hash 时落在默认工具，也要铺上它的草稿
 }
 
 /* ================================================================ 参照图 */
@@ -297,6 +503,7 @@ function addRefs(files) {
   }
   S.refs.push(...accepted);
   renderRefs();
+  touch(true);            // 参照图字节大，单独一张表，只在增删时写
 }
 
 function removeRef(i, silent) {
@@ -305,6 +512,7 @@ function removeRef(i, silent) {
   URL.revokeObjectURL(r.url);
   S.refs.splice(i, 1);
   if (!silent) renderRefs();
+  touch(true);
 }
 
 function renderRefs() {
@@ -362,16 +570,16 @@ function renderToolState() {
   $('emptyHints').innerHTML = t.hints.map(h => `<li>${esc(h)}</li>`).join('');
 }
 
-/** 清空舞台上的结果视图（结果本身已存进作品库，不会丢） */
-function resetStage() {
-  S.images = [];
-  S.current = 0;
-  S.lastMeta = {};
-  S.lastPrompt = '';
-  S.lastSent = '';
-  $('resultImg').removeAttribute('src');
-  showState('stateEmpty');
-  renderToolState();
+/** 按当前工具的草稿渲染舞台：有结果就显示结果，没有就回到空态 */
+function renderStage() {
+  if (S.images.length) {
+    renderResult(S.lastMeta || {});
+  } else {
+    $('resultImg').removeAttribute('src');
+    showState('stateEmpty');
+    $('resSaved').hidden = true;
+    renderToolState();
+  }
 }
 
 /** 骨架屏尺寸跟着所选比例走，让等待期的占位和将要出现的画面一致 */
@@ -396,6 +604,8 @@ function bindPrompt() {
   ta.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
   });
+  // 每个工具有自己的提示词：边写边存，切走时不用依赖「切走那一刻」的读取
+  ta.addEventListener('input', () => touch());
 }
 
 function renderToolChips() {
@@ -405,6 +615,7 @@ function renderToolChips() {
     const ta = $('prompt');
     ta.value = b.dataset.p;
     ta.focus();
+    touch();
   }));
 }
 
@@ -468,6 +679,7 @@ function bindPills() {
   sz.addEventListener('picked', (e) => {
     S.size = e.detail;
     applySizeLabel();
+    touch();
   });
   ct.addEventListener('click', () => openPop(ct, COUNTS.map(n => ({
     v: String(n), label: `${n} 张`, on: n === S.count,
@@ -475,6 +687,7 @@ function bindPills() {
   ct.addEventListener('picked', (e) => {
     S.count = Number(e.detail);
     $('pillCountText').textContent = `${S.count} 张`;
+    touch();
   });
 }
 
@@ -608,10 +821,12 @@ async function generate() {
     stopTimer();
     S.images = (res.images || []).map(im => ({ ...im, recId: null }));
     S.current = 0;
-    S.lastMeta = res;
+    S.lastMeta = metaLite(res);
     renderResult(res);
     toast(`生成完成，用时 ${res.elapsed}s`, 'ok');
     if (S.autoSave) await autoSave(res);
+    touch();            // 连结果一起进草稿，切走再回来还在
+    flushDraft();
   } catch (e) {
     stopTimer();
     if (e.name === 'AbortError') { showState('stateEmpty'); toast('已取消生成'); }
@@ -665,7 +880,7 @@ function renderResult(res) {
   $('resTool').textContent = res.tool_name || S.tool.name;
   $('resSize').textContent = `尺寸 ${res.size || S.size}`;
   $('resModel').textContent = res.model || '—';
-  $('resElapsed').textContent = `耗时 ${res.elapsed}s`;
+  $('resElapsed').textContent = res.elapsed ? `耗时 ${res.elapsed}s` : '—';
   $('resRef').hidden = !res.used_reference;
   $('resPrompt').textContent = S.lastPrompt;
   // 有加工具指令时把真正发出去的内容也亮出来，避免「四个工具看起来一样」的困惑
@@ -676,7 +891,7 @@ function renderResult(res) {
   $('resSaved').hidden = true;
   $('btnFav').classList.remove('on');
 
-  const revised = res.images?.[0]?.revised_prompt || '';
+  const revised = res.revised || res.images?.[0]?.revised_prompt || '';
   $('resRevisedWrap').hidden = !revised;
   $('resRevised').textContent = revised;
 
@@ -703,6 +918,7 @@ function showImage(i) {
   $('resultImg').src = im.data_url || im.url || '';
   markNav();
   $('btnFav').classList.remove('on');
+  touch();              // 记住当时停在第几张
 }
 
 function bindResult() {
@@ -769,6 +985,15 @@ function bindProjects() {
     if (!n) { toast('作品库已经是空的'); return; }
     if (!confirm(`确定清空作品库里的 ${n} 张图片？此操作不可恢复。`)) return;
     await ImgStore.clear();
+    // 舞台上的「上一张结果」都指向作品库记录，库里清空了它们也就没意义了
+    for (const t of TOOLS) {
+      const d = S.byTool[t.id];
+      if (!d) continue;
+      d.images = []; d.recIds = []; d.current = 0; d.meta = null;
+      persistDraft(t, false);
+    }
+    S.images = []; S.current = 0; S.lastMeta = null;
+    renderStage();
     await refreshLibrary();
     await refreshStorage();
     toast('已清空作品库', 'ok');
@@ -871,6 +1096,7 @@ async function deleteRec(id) {
   if (!confirm('删除这张图片？')) return;
   await ImgStore.remove(id);
   S.library = S.library.filter(r => r.id !== id);
+  dropResultOf(id);      // 该图若正挂在某个工具的舞台上，一并清掉
   renderLibrary();
   await refreshLibraryCount();
   await refreshStorage();

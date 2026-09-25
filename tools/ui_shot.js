@@ -624,12 +624,16 @@ const SEED = `(async () => {
         };
       })()`);
 
-      async function runTool(key, needRef) {
+      // 每个工具写不同的提示词：这样"互不串"才测得出来
+      const P = { create: '提示词-自由生成', combine: '提示词-图像融合',
+                  portrait: '提示词-人物写真', product: '提示词-商品图生成' };
+
+      async function runTool(key, needRef, promptText) {
         await cdp.evaluate(`location.hash = '#${key}', 1`);
         await sleep(450);
         await cdp.shot(`ui_14_tool_${key}.png`);        // 切过去、还没上传参照图的样子
         if (needRef) { await setFile(cdp, '#refInput', card); await sleep(600); }
-        await setInput(cdp, '#prompt', '统一的测试提示词');
+        await setInput(cdp, '#prompt', promptText);
         await click(cdp, '#btnGenerate');
         await sleep(1300);
         return cdp.evaluate(`(() => {
@@ -654,33 +658,34 @@ const SEED = `(async () => {
       check('自由生成：参照图计数显示「无需」', stCreate.refCount === '无需', stCreate.refCount);
       check('自由生成：默认尺寸 1024×1024', stCreate.sizeText === '1024×1024', stCreate.sizeText);
 
-      const rCreate = await runTool('create', false);
+      const rCreate = await runTool('create', false, P.create);
       check('自由生成：提示词原样发送（不加工具指令）',
-        rCreate.cap.prompt === '统一的测试提示词', JSON.stringify(rCreate.cap.prompt));
+        rCreate.cap.prompt === P.create, JSON.stringify(rCreate.cap.prompt));
       check('自由生成：不带参照图', rCreate.cap.refs === 0, `${rCreate.cap.refs} 张`);
       check('自由生成：结果不显示「实际发送的提示词」', !rCreate.sentShown);
       check('自由生成：结果标签正确', rCreate.tool === '自由生成', rCreate.tool);
 
-      // 切到图像融合：上一张结果必须被清掉
+      // 切到图像融合：展示的是「它自己」的舞台——还没生成过，所以是空态，
+      // 而不是把自由生成的那张图带过来（那是四个工具看起来一样的老毛病）
       await cdp.evaluate(`location.hash = '#combine', 1`);
       await sleep(600);
       const stCombine = await toolState();
-      check('切工具后上一张结果被清空（不会误以为四个工具一样）',
+      check('切工具后不串上一张结果（空态）',
         stCombine.resultHidden && stCombine.emptyVisible);
       check('图像融合：显示上传区', stCombine.dzVisible && !stCombine.noteVisible);
       check('图像融合：默认尺寸走「自动」', stCombine.sizeText === '自动', stCombine.sizeText);
       check('图像融合：缺参照图时先提示上传',
         stCombine.emptyTitle.indexOf('参照图') >= 0, stCombine.emptyTitle);
 
-      const rCombine = await runTool('combine', true);
+      const rCombine = await runTool('combine', true, P.combine);
       check('图像融合：提示词被加上融合指令',
         rCombine.cap.prompt.indexOf('把参照图中的主体自然地融入') >= 0
-        && rCombine.cap.prompt.indexOf('统一的测试提示词') >= 0,
+        && rCombine.cap.prompt.indexOf(P.combine) >= 0,
         rCombine.cap.prompt.split('\n')[0]);
       check('图像融合：结果区展示实际发送的提示词',
         rCombine.sentShown && rCombine.sent.indexOf('统一') >= 0);
 
-      const rPortrait = await runTool('portrait', true);
+      const rPortrait = await runTool('portrait', true, P.portrait);
       check('人物写真：提示词被加上身份保持指令',
         rPortrait.cap.prompt.indexOf('以参照图中人物的五官') >= 0,
         rPortrait.cap.prompt.split('\n')[0]);
@@ -688,7 +693,7 @@ const SEED = `(async () => {
         rPortrait.cap.size === '1024x1536', rPortrait.cap.size);
       check('人物写真：结果标签正确', rPortrait.tool === '人物写真', rPortrait.tool);
 
-      const rProduct = await runTool('product', true);
+      const rProduct = await runTool('product', true, P.product);
       check('商品图生成：提示词被加上电商主图指令',
         rProduct.cap.prompt.indexOf('电商商品图') >= 0,
         rProduct.cap.prompt.split('\n')[0]);
@@ -699,6 +704,121 @@ const SEED = `(async () => {
       const prompts4 = [rCreate.cap.prompt, rCombine.cap.prompt,
                         rPortrait.cap.prompt, rProduct.cap.prompt];
       check('四个工具实际发出的提示词互不相同', new Set(prompts4).size === 4);
+
+
+      // ---- 每个工具的草稿互相独立，并且落到本机 ----
+      console.log('\n[工具独立草稿]');
+      const promptOf = () => cdp.evaluate(`document.querySelector('#prompt').value`);
+      const sizeOf = () => cdp.evaluate(`document.querySelector('#pillSizeText').textContent`);
+      const refsOf = () => cdp.evaluate(`document.querySelector('#refCount').textContent`);
+      const stageOf = () => cdp.evaluate(`(() => {
+        const q = (s) => document.querySelector(s);
+        return { result: !q('#result').hidden, empty: !q('#stateEmpty').hidden,
+                 tool: q('#resTool').textContent,
+                 src: (q('#resultImg').getAttribute('src') || '').slice(0, 64) };
+      })()`);
+      async function goTool(key) {
+        await cdp.evaluate(`location.hash = '#${key}', 1`);
+        await sleep(520);
+      }
+
+      // ① 提示词各归各的
+      await goTool('create');    const pCreate = await promptOf();
+      await goTool('combine');   const pCombine = await promptOf();
+      await goTool('portrait');  const pPortrait = await promptOf();
+      await goTool('product');   const pProduct = await promptOf();
+      check('切回来各自还是自己的提示词',
+        pCreate === P.create && pCombine === P.combine
+        && pPortrait === P.portrait && pProduct === P.product,
+        `create="${pCreate}" / combine="${pCombine}"`);
+      check('四个工具的提示词互不相同',
+        new Set([pCreate, pCombine, pPortrait, pProduct]).size === 4);
+
+      // ② 尺寸各自独立：给「自由生成」换成横版，别的工具不该跟着变
+      await goTool('create');
+      await click(cdp, '#pillSize');
+      await sleep(320);
+      const picked = await cdp.evaluate(`(() => {
+        const b = [...document.querySelectorAll('#popWrap .pop button')]
+          .find(x => x.dataset.v === '1536x1024');
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      })()`);
+      if (picked) await clickAt(cdp, picked.x, picked.y);
+      await sleep(320);
+      const szCreate = await sizeOf();
+      await goTool('portrait');
+      const szPortrait = await sizeOf();
+      check('尺寸按工具各自独立',
+        szCreate === '1536×1024' && szPortrait === '1024×1536',
+        `create=${szCreate} portrait=${szPortrait}`);
+
+      // ③ 参照图各自独立
+      await goTool('create');   const rcCreate = await refsOf();
+      await goTool('combine');  const rcCombine = await refsOf();
+      check('参照图按工具各自独立',
+        rcCreate === '无需' && rcCombine === '1/4',
+        `create=${rcCreate} combine=${rcCombine}`);
+
+      // ④ 结果各留各的，切走再切回还是同一张
+      await goTool('create');
+      const sCreate = await stageOf();
+      await goTool('product');
+      const sProduct = await stageOf();
+      await goTool('create');
+      const sBack = await stageOf();
+      check('四个工具各自保留自己那张结果',
+        sCreate.result && sProduct.result
+        && sCreate.tool === '自由生成' && sProduct.tool === '商品图生成',
+        `create=${sCreate.tool}/${sCreate.result} product=${sProduct.tool}/${sProduct.result}`);
+      check('切走再切回，结果图还是同一张',
+        !!sBack.src && sBack.src === sCreate.src);
+
+      // ⑤ 刷新页面：草稿从本机读回（hash 会保留，所以先看当前工具恢复没有）
+      await cdp.send('Page.reload', { ignoreCache: true });
+      await cdp.waitFor(
+        `document.querySelector('#prompt').value === ${JSON.stringify(P.create)}`,
+        25000, '刷新后恢复提示词');
+      const toastCount = await cdp.evaluate(
+        `document.querySelectorAll('#toastWrap .toast').length`);
+      check('刷新后不会刷出一屏提示', toastCount <= 1, `${toastCount} 条`);
+      const reSize = await sizeOf();
+      const reRefs = await refsOf();
+      check('刷新后回到刷新前的工具，尺寸与参照图都还在',
+        reSize === '1536×1024' && reRefs === '无需', `${reSize} / ${reRefs}`);
+      await goTool('product');
+      check('刷新后切到别的工具，显示的仍是它自己的提示词',
+        (await promptOf()) === P.product);
+      await goTool('combine');
+      await sleep(900);
+      const after = await cdp.evaluate(`(() => {
+        const q = (s) => document.querySelector(s);
+        return {
+          prompt: q('#prompt').value,
+          refs: q('#refCount').textContent,
+          result: !q('#result').hidden,
+          tool: q('#resTool').textContent,
+        };
+      })()`);
+      check('刷新后参照图自动恢复', after.refs === '1/4', after.refs);
+      check('刷新后上一张结果从作品库取回', after.result && after.tool === '图像融合',
+        `${after.tool} result=${after.result}`);
+      await cdp.shot('ui_16_draft_restored.png');
+
+      // ⑥ 草稿确实存在本机：拆两张表，参照图与大字段分开
+      const local = await cdp.evaluate(`(async () => {
+        const db = await new Promise((res, rej) => {
+          const r = indexedDB.open('wb-image-tools');
+          r.onsuccess = () => res(r.result);
+          r.onerror = () => rej(r.error || new Error('打不开'));
+        });
+        const names = [...db.objectStoreNames];
+        return { names: names.join('+'), state: names.indexOf('state') >= 0,
+                 assets: names.indexOf('assets') >= 0 };
+      })()`);
+      check('草稿存在本机 IndexedDB（state / assets 两张表）',
+        local.state && local.assets, local.names);
 
       // ---- 骨架屏的渐变动画 ----
       await cdp.evaluate(`(() => {
