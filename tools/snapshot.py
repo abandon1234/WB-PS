@@ -24,6 +24,8 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".idea", ".vscode"}
+# 用相对路径精确排除，避免误伤同名的普通目录
+SKIP_REL_DIRS = {os.path.join("samples", "out")}
 SKIP_FILES = {".font_cache.json"}
 SKIP_SUFFIX = (".pyc", ".pyo", ".log", ".tmp")
 
@@ -58,7 +60,11 @@ def build(version: str, out_dir: str, quiet: bool = False) -> str:
     raw = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for dirpath, dirnames, filenames in os.walk(ROOT):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            rel_dir = os.path.relpath(dirpath, ROOT)
+            dirnames[:] = [d for d in dirnames
+                           if d not in SKIP_DIRS
+                           and (os.path.join(rel_dir, d) if rel_dir != "." else d)
+                           not in SKIP_REL_DIRS]
             for fn in filenames:
                 if fn in SKIP_FILES or fn.endswith(SKIP_SUFFIX):
                     continue
