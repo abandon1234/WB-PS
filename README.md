@@ -231,6 +231,38 @@ python tools/api_test.py              # 接口契约测试（需服务已启动�
 
 ---
 
+## 版本管理
+
+项目已初始化 Git 仓库，首个版本标记为 `v1.0.0`。
+
+```bash
+git log --oneline --decorate    # 提交历史与标签
+git diff v1.0.0 --stat          # 相比 v1.0.0 改了哪些文件
+git diff v1.0.0 -- app/         # 只看某个目录的差异
+git checkout v1.0.0             # 回到该版本代码（用 git switch - 返回）
+```
+
+`.gitignore` 已排除生成物（`samples/out/`）、缓存（`app/.font_cache.json`）、
+`__pycache__`，以及 `fonts/` 下的字体文件——最后一项是刻意的：
+避免把有版权的商业字体分发出去，所以 **git 仓库里不含你的自定义字体**。
+
+### 打完整快照
+
+需要连同自定义字体一起留档时用快照脚本：
+
+```bash
+python tools/snapshot.py                    # 版本号自动取当前 git tag
+python tools/snapshot.py --version v1.1     # 指定版本号
+python tools/snapshot.py --out D:\backup    # 指定输出目录（默认项目上一级）
+```
+
+生成形如 `WB-PS-v1.0.0-20260925-1038.zip` 的包，解压即可运行，
+内含源码、测试图与 `fonts/` 下的字体。
+
+**两者分工**：git 管版本演进（可 diff、可回滚），快照是完整离线副本。
+
+---
+
 ## 已知限制
 
 - **字体识别是"匹配"而非"识别"**：系统从常用字体里挑最像的（命中率约 8/9），
