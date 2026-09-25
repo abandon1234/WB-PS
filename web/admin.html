@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>后台管理 · 图像工坊</title>
+<link rel="stylesheet" href="/static/admin.css?v=2.1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%235b9dff'/><text x='50' y='72' font-size='58' text-anchor='middle' fill='%2306122b' font-family='sans-serif' font-weight='700'>W</text></svg>">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 8-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 12l4.5-3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="3" y="13" width="18" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="7.5" cy="7.5" r="1.1" fill="currentColor"/><circle cx="7.5" cy="16.5" r="1.1" fill="currentColor"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 2.8v5.4c0 4.3-2.9 8-7 9.8-4.1-1.8-7-5.5-7-9.8V5.8L12 3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9.2 12l2 2 3.6-3.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 6.5l4 4" stroke="currentColor" stroke-width="1.7"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V5.5A1.5 1.5 0 0 1 11.5 4h1A1.5 1.5 0 0 1 14 5.5V7M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6l1-7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 4v7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M7 7a7 7 0 1 0 10 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.8" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M4 5l15 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9 6.9A9.3 9.3 0 0 1 12 6.5c6 0 9.5 5.5 9.5 5.5a17 17 0 0 1-3 3.6M6.3 9.2A17 17 0 0 0 2.5 12S6 17.5 12 17.5c1.1 0 2.1-.2 3-.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10" width="15" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 10V7.5a4 4 0 1 1 8 0V10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3l9-16Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="17.4" r="1.1" fill="currentColor"/></symbol>
+</defs></svg>
+
+<!-- ======================= 登录 / 初始化 ======================= -->
+<div class="gate" id="gate">
+  <div class="gate-card">
+    <div class="gate-brand"><span class="logo">W</span><span>图像工坊 · 后台</span></div>
+    <h1 id="gateTitle">正在检查…</h1>
+    <p id="gateDesc" class="gate-desc">—</p>
+    <form id="gateForm" autocomplete="off">
+      <label class="fld">
+        <span id="pwLabel">管理密码</span>
+        <div class="key-row">
+          <input type="password" id="gatePw" class="input" placeholder="请输入密码" autocomplete="current-password">
+          <button type="button" class="icon-btn" id="gateEye" title="显示/隐藏">
+            <svg viewBox="0 0 24 24"><use href="#i-eye"/></svg>
+          </button>
+        </div>
+      </label>
+      <label class="fld" id="pw2Wrap" hidden>
+        <span>确认密码</span>
+        <input type="password" id="gatePw2" class="input" placeholder="再输入一次" autocomplete="new-password">
+      </label>
+      <div class="inline-msg err" id="gateMsg" hidden></div>
+      <button type="submit" class="btn accent block" id="gateSubmit">登录</button>
+    </form>
+    <div class="gate-foot">
+      <a href="/image"><svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg>返回生成页</a>
+      <span id="gateHint">密码只以哈希保存在本机 data/admin.json，忘记可删除该文件重置</span>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 主界面 ======================= -->
+<div class="shell" id="shell" hidden>
+  <header class="topbar">
+    <span class="logo">W</span>
+    <div class="tb-title">
+      <b>图像工坊</b>
+      <span>后台管理</span>
+    </div>
+    <div class="tb-right">
+      <span class="pill" id="tbActive"><i></i><span>—</span></span>
+      <a class="btn ghost" href="/image" target="_blank" rel="noopener">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg>生成页
+      </a>
+      <button class="btn ghost" id="btnLogout">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-power"/></svg>退出
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="rail">
+      <button class="rail-item on" data-page="overview">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-gauge"/></svg><span>概览</span>
+      </button>
+      <button class="rail-item" data-page="providers">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-server"/></svg><span>中转站配置</span>
+      </button>
+      <button class="rail-item" data-page="security">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-shield"/></svg><span>安全设置</span>
+      </button>
+      <div class="rail-foot">
+        <p>所有密钥仅存于<br>本机 <code>data/</code> 目录</p>
+      </div>
+    </nav>
+
+    <main class="content">
+
+      <!-- ---------- 概览 ---------- -->
+      <section class="page" id="pageOverview">
+        <header class="page-head">
+          <h2>概览</h2>
+          <p>服务运行状态与配置概况</p>
+        </header>
+
+        <div class="stats" id="stats"></div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>数据存放说明</h3></div>
+          <ul class="facts">
+            <li>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-database"/></svg>
+              <div><b>中转站配置</b><span id="factConfigFile">—</span></div>
+            </li>
+            <li>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-lock"/></svg>
+              <div><b>API Key</b><span>只以明文保存在本机配置文件里，<em>任何接口都不会把它下发到前端</em>；后台列表里也只显示打码值。</span></div>
+            </li>
+            <li>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-shield"/></svg>
+              <div><b>管理密码</b><span>以 PBKDF2-HMAC-SHA256（12 万次迭代 + 随机盐）存哈希，登录令牌放 HttpOnly Cookie，前端脚本读不到。</span></div>
+            </li>
+            <li>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-alert"/></svg>
+              <div><b>生成结果</b><span>服务端<em>不保存任何生成图片</em>，图片由浏览器存进本机 IndexedDB，清空浏览器数据即彻底消失。</span></div>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ---------- 中转站 ---------- -->
+      <section class="page" id="pageProviders" hidden>
+        <header class="page-head">
+          <div>
+            <h2>中转站配置</h2>
+            <p>可配置多个中转站，随时切换；被禁用的配置不参与生成</p>
+          </div>
+          <button class="btn accent" id="btnAdd">
+            <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>新增配置
+          </button>
+        </header>
+
+        <div class="plist" id="plist"></div>
+
+        <form class="pform" id="pform" hidden>
+          <div class="pform-head">
+            <h3 id="formTitle">新增配置</h3>
+            <button type="button" class="link-btn" id="btnCancelForm">取消</button>
+          </div>
+
+          <div class="grid2">
+            <label class="fld">
+              <span>名称</span>
+              <input type="text" id="fName" class="input" placeholder="例如：主力中转站" maxlength="60">
+            </label>
+            <label class="fld">
+              <span>模型名</span>
+              <input type="text" id="fModel" class="input" value="gpt-image-2" spellcheck="false">
+            </label>
+          </div>
+
+          <label class="fld">
+            <span>中转站地址</span>
+            <input type="text" id="fBase" class="input" placeholder="https://your-relay.example.com" spellcheck="false">
+            <em>填域名即可，末尾的 /v1 会自动去掉</em>
+          </label>
+
+          <label class="fld">
+            <span>API Key</span>
+            <div class="key-row">
+              <input type="password" id="fKey" class="input" placeholder="sk-..." spellcheck="false" autocomplete="new-password">
+              <button type="button" class="icon-btn" id="btnEye" title="显示/隐藏">
+                <svg viewBox="0 0 24 24"><use href="#i-eye"/></svg>
+              </button>
+            </div>
+            <em id="keyTip">仅保存在本机 data/ 目录，保存后不再回传明文</em>
+          </label>
+
+          <label class="fld">
+            <span>备注</span>
+            <input type="text" id="fNote" class="input" placeholder="可选" maxlength="200">
+          </label>
+
+          <label class="switch">
+            <input type="checkbox" id="fEnabled" checked>
+            <span>启用该配置</span>
+          </label>
+
+          <div class="pform-actions">
+            <button type="submit" class="btn accent" id="btnSave">保存</button>
+            <button type="button" class="btn ghost" id="btnTestInline">保存并测试连接</button>
+          </div>
+
+          <div class="inline-msg" id="inlineMsg" hidden></div>
+        </form>
+      </section>
+
+      <!-- ---------- 安全 ---------- -->
+      <section class="page" id="pageSecurity" hidden>
+        <header class="page-head">
+          <h2>安全设置</h2>
+          <p>修改管理密码后，所有已登录设备都需要重新登录</p>
+        </header>
+
+        <form class="panel pwform" id="pwForm">
+          <div class="panel-head"><h3>修改管理密码</h3></div>
+          <div class="grid2">
+            <label class="fld">
+              <span>当前密码</span>
+              <input type="password" id="pwOld" class="input" autocomplete="current-password">
+            </label>
+            <label class="fld">
+              <span>新密码</span>
+              <input type="password" id="pwNew" class="input" autocomplete="new-password">
+              <em>至少 6 位</em>
+            </label>
+          </div>
+          <label class="fld">
+            <span>确认新密码</span>
+            <input type="password" id="pwNew2" class="input" autocomplete="new-password">
+          </label>
+          <div class="inline-msg" id="pwMsg" hidden></div>
+          <button type="submit" class="btn accent" id="btnPwSave">更新密码</button>
+        </form>
+
+        <div class="panel">
+          <div class="panel-head"><h3>会话与访问</h3></div>
+          <ul class="facts">
+            <li>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-lock"/></svg>
+              <div><b>登录有效期</b><span id="factTtl">—</span></div>
+            </li>
+            <li>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-alert"/></svg>
+              <div><b>暴力破解防护</b><span>同一 IP 连续 6 次密码错误后锁定 5 分钟。</span></div>
+            </li>
+            <li>
+              <svg class="ic" viewBox="0 0 24 24"><use href="#i-server"/></svg>
+              <div><b>重置后台</b><span>忘记密码时，停止服务并删除 <code>data/admin.json</code>，重启后可重新设置密码。</span></div>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="/static/admin.js?v=2.1"></script>
+</body>
+</html>

@@ -27,6 +27,15 @@ python -m app.main                 # 默认 http://127.0.0.1:8000
 python -m app.main --port 9000     # 指定端口
 ```
 
+启动后：
+
+- 图片文字处理 → <http://127.0.0.1:8000/>
+- 图像工坊 → <http://127.0.0.1:8000/image>
+- 后台管理 → <http://127.0.0.1:8000/admin>
+
+**后台首次打开会让你设置管理密码**（没有默认口令）。忘记密码时停止服务、
+删除 `data/admin.json` 再重启即可重新设置。
+
 首次运行如提示缺依赖：
 
 ```bash
@@ -155,70 +164,131 @@ Helvetica vs Calibri（得分几乎打平），而形状 IoU 是拿真实笔画�
 # 模块二：图像工坊（AI 图片生成）
 
 独立页面 **`/image`**，通过 OpenAI 兼容中转站调用 `gpt-image-2` 生成图片。
-与文字处理模块完全解耦：独立路由、独立静态资源、独立配置存储。
+配置管理挪到独立的后台页 **`/admin`**——生成页拿不到任何密钥，详见下节的隔离说明。
+与文字处理模块同样完全解耦：独立路由、独立静态资源、独立配置存储。
 
-## 页面构成
+## 两个页面
+
+### `/image` — 生成页（面向使用者）
+
+左侧深色侧边栏 + 中部控制台 + 右侧舞台：
 
 | 区域 | 内容 |
 |---|---|
-| 提示词 | 多行输入 + 字数统计 + 常用短语快捷填充（Ctrl/Cmd + Enter 直接生成） |
-| 参照图 | 拖拽或点选上传，缩略图预览、大小与格式回显、可一键移除 |
-| 参数 | 尺寸（1:1 / 3:2 / 2:3 / 自动）、生成数量（1~4） |
-| 结果区 | 大图预览、多图缩略切换、下载、新窗口打开、再生成 |
-| 加载态 | 三层旋转光环 + **实时计时器** + 骨架屏 + 可取消 |
-| 错误态 | 错误标题 / 原因 / 修复建议 / 可折叠的原始返回 / 重试按钮 |
+| 侧栏 · Create | 自由生成 / 图像融合 / 人物写真 / 商品图生成，各自带默认提示词模板与参照图上限 |
+| 侧栏 · Library | 作品库入口（实时显示数量）、本机占用条 |
+| 上传区 | `Images 0/4`，拖拽或点选，**最多 4 张**，缩略图可单张移除 |
+| 提示词 | 多行输入 + 该工具的快捷短语（`Ctrl/Cmd + Enter` 或 `Ctrl/Cmd + 3` 直接生成） |
+| 底栏 | 尺寸、数量两个胶囊选择器 + Generate 主按钮（带扫光动画） |
+| 舞台 | 空态引导 / 三层旋转光环 + 实时计时 + 骨架屏 / 结果大图与多图切换 / 结构化错误卡片 |
+| 作品库 | 网格画廊：搜索提示词、只看收藏、灯箱预览、下载、删除、容量统计 |
+
+### `/admin` — 后台管理（独立页面，需登录）
+
+| 页签 | 内容 |
+|---|---|
+| 概览 | 配置总数 / 启用数 / 当前使用 / 数据存放说明 |
+| 中转站配置 | 新增、编辑、删除、启用禁用、设为当前、连通性测试 |
+| 安全设置 | 修改管理密码、会话有效期、重置方式说明 |
+
+## 密钥是怎么被隔离的
+
+这是本次改动的重点。**任何接口都不会把 API Key 下发给前端。**
+
+1. **两套接口前缀**：生成页只依赖 `/api/image/status` 与 `/api/image/generate`；
+   配置类接口全部搬到 `/api/admin/*`，必须登录才能访问。
+   原来下发明文 key 的 `/api/image/overview`、`/api/image/providers` **已彻底删除**
+   （访问返回 404）。
+2. **默认打码**：`config.public_view()` 的 `reveal` 默认值改为 `False`，
+   凡是走到 HTTP 响应的配置一律显示成 `sk-BSp******r4si`。
+   只有服务端内部调 `get_provider()` 才拿得到明文，用于真正发起请求。
+3. **管理密码**：PBKDF2-HMAC-SHA256（12 万次迭代 + 16 字节随机盐）存哈希，
+   落在 `data/admin.json`。**没有默认口令**，首次打开 `/admin` 由使用者自己设定。
+4. **会话令牌**：HMAC 签名 + 12 小时过期，放在 `HttpOnly; SameSite=Lax` Cookie 里，
+   前端 JS 读不到，页面即使出现 XSS 也拿不走凭证。
+5. **登录限速**：同一 IP 连续 6 次密码错误锁定 5 分钟。
+6. **忘记密码**：停止服务 → 删除 `data/admin.json` → 重启后重新设置。服务端不留后门。
+
+## 生成结果存在哪
+
+**服务端不保存任何生成图片。** 图片以 data URL 直接回给浏览器，
+前端转成 `ArrayBuffer` 存进本机 **IndexedDB**（`wb-image-studio`）：
+
+- 库内**拆两张表**：`meta` 放元数据 + 360px 缩略图，`blobs` 放原图字节。
+  如果混在一张表里，画廊遍历游标会把每张 2MB 的原图都读进内存——
+  50 张就是 100MB 的 I/O。拆开后画廊只读几十 KB 的缩略图，点开灯箱才取原图。
+- 记录提示词、模型、尺寸、工具、时间、收藏等元数据，支持搜索与筛选。
+- 清空浏览器数据即彻底消失；`data/` 目录里除了配置没有任何图片。
+- 支持 `/image#projects` 深链直达作品库。
 
 ## 中转站协议（实测结论）
 
-对接过程中验证出三条关键事实，都写进了 `app/image_gen/client.py`：
+对接过程中验证出四条关键事实，都写进了 `app/image_gen/client.py`：
 
-1. **参照图走 `/v1/images/generations` 的 `image` 字段**（data URL 字符串），
-   而不是标准 `/v1/images/edits`——后者在不少中转站上直接返回空 `data`。
-   （已用"洋红底 + 中央白方块"的强特征参照图验证：生成结果洋红占比 85.8%。）
-2. **`b64_json` 返回的是 data URL**（带 `data:image/png;base64,` 前缀），
+1. **参照图走 `/v1/images/generations` 的 `image` 字段**（data URL），
+   而不是标准 `/v1/images/edits`——后者在这类中转站上直接返回空 `data`。
+2. **多参照图同样走 `image` 字段，传数组即可**，不必退化成拼图。
+   实测（洋红底白方块 + 青底黑三角两张强特征图）：结果图洋红占比 75.3%、
+   青 19.3%，**两张都被采纳**。前端仍保留"被拦时自动改拼图重试"的兜底。
+3. **`b64_json` 返回的是 data URL**（带 `data:image/png;base64,` 前缀），
    不是纯 base64；直接解码会因长度非 4 的倍数而报错，需要先剥前缀再补 padding。
-3. 内容被拦截时接口可能返回 **HTTP 200 + 空 data**，需要显式识别并给出提示。
-
-## 中转站配置管理
-
-点右上角「中转站配置」打开抽屉，支持：
-
-- **新增 / 编辑 / 删除** 配置
-- **启用 / 禁用**（禁用后自动切到下一个可用配置）
-- **设为使用**（多配置间一键切换当前生效项）
-- **测试连接**：拉取模型列表并确认目标模型是否存在，找不到时列出相近名称
-
-配置持久化在 `data/image_providers.json`，该目录已加入 `.gitignore`
-（内含 API key，不进版本库）。编辑时 **key 留空表示不修改**，
-避免前端拿到打码值后误覆盖真实 key。
+4. 内容被拦截时接口可能返回 **HTTP 200 + 空 data**，需要显式识别并给出提示。
 
 ## 接口
 
+**公开（生成页用，不含任何密钥与地址）**
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/image` | 独立页面 |
-| GET | `/api/image/overview` | 配置列表 + 当前生效项 + 可选尺寸 |
-| GET | `/api/image/providers` | 配置列表 |
-| POST | `/api/image/providers` | 新增 |
-| PUT | `/api/image/providers/{id}` | 编辑（`api_key` 传空 = 不改） |
-| DELETE | `/api/image/providers/{id}` | 删除 |
-| POST | `/api/image/providers/{id}/toggle` | 启用 / 禁用 |
-| POST | `/api/image/providers/{id}/activate` | 设为当前使用 |
-| POST | `/api/image/providers/{id}/test` | 连通性测试 |
-| POST | `/api/image/generate` | 生成（multipart：`prompt` / `size` / `n` / `reference`） |
+| GET | `/image` | 生成页 |
+| GET | `/api/image/status` | 是否就绪、模型名、可选尺寸 |
+| POST | `/api/image/generate` | 生成（multipart：`prompt` / `size` / `n` / `references`×N） |
+
+**后台（全部需登录）**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/admin` | 后台页面 |
+| GET | `/api/admin/status` | 初始化状态 / 登录状态 |
+| POST | `/api/admin/setup` · `login` · `logout` | 首次初始化 / 登录 / 退出 |
+| POST | `/api/admin/password` | 修改密码（轮换签名密钥，其他设备需重登） |
+| GET | `/api/admin/system` | 概览数据 |
+| GET | `/api/admin/providers` | 配置列表（key 打码） |
+| POST | `/api/admin/providers` | 新增 |
+| PUT | `/api/admin/providers/{id}` | 编辑（`api_key` 传空 = 不改） |
+| DELETE | `/api/admin/providers/{id}` | 删除 |
+| POST | `/api/admin/providers/{id}/toggle` | 启用 / 禁用 |
+| POST | `/api/admin/providers/{id}/activate` | 设为当前使用 |
+| POST | `/api/admin/providers/{id}/test` | 连通性测试 |
 
 ## 测试
 
 ```bash
-python tools/image_api_test.py                     # 用内置测试参数，含真实生成
-python tools/image_api_test.py --no-generate       # 跳过生成，省额度
-python tools/image_api_test.py --url <地址> --key <key>
+python tools/image_api_test.py                     # 不碰后台密码，跳过需登录的用例
+python tools/image_api_test.py --password <密码>    # 跑完整流程（含后台增删改查）
+python tools/image_api_test.py --no-generate       # 跳过真实生成，省额度
+python tools/image_api_test.py --multi-ref         # 额外验证多参照图
 ```
 
-覆盖：页面与静态资源、配置增删改查、启用禁用、设为当前、连通性、
-文生图、参照图生图、错误处理、测试数据清理。**当前 31 项通过。**
+覆盖：页面与静态资源、**泄露检查（状态接口与所有后台响应里都不得出现明文 key）**、
+未登录访问必须被拒、后台增删改查、启用禁用、设为当前、连通性、
+文生图、单/多参照图生成、错误处理、测试数据清理。**当前 68 项通过。**
 
-> 注意：真实生成一次约需 30~60 秒、消耗一次额度，脚本默认会执行。
+`--password` 在后台尚未初始化时会被用作初始密码（脚本会明确提示）；
+不带该参数时绝不会修改后台密码，避免把使用者锁在门外。
+
+> 注意：真实生成一次约需 30~120 秒（多参照图更久）、消耗额度。
+
+### 界面截图
+
+```bash
+node tools/ui_shot.js --base http://127.0.0.1:8000 --password <后台密码>
+```
+
+环境里没有 Playwright 的 Chromium，但系统装了 Edge，于是直接用 Node 内置的
+WebSocket 连 CDP 驱动它。好处是**可以先注入数据再截图**——会往浏览器本机
+IndexedDB 播种 6 张示例图，因此"作品库画廊""灯箱""后台仪表盘"这些
+需要数据或登录的界面都能截到，输出到 `samples/out/ui_*.png`。
 
 ---
 
@@ -236,21 +306,26 @@ WB-PS/
 │   ├── pipeline.py        文字处理编排层（无状态，可复现）
 │   └── image_gen/         图像工坊（独立模块）
 │       ├── config.py      中转站配置存储（增删改查 / 启用禁用 / 当前项）
+│       ├── admin_auth.py  后台鉴权（PBKDF2 口令 + HMAC 会话令牌 + 登录限速）
 │       ├── client.py      中转站 API 客户端（协议处理 + 错误映射）
-│       └── routes.py      /image 页面与 /api/image/* 接口
+│       └── routes.py      /image、/admin 页面与公开/后台两套接口
 ├── web/                   前端（原生 HTML/CSS/JS，零构建）
 │   ├── index.html/.css/.js        文字处理模块
-│   └── image.html/.css/.js        图像工坊模块
+│   ├── image.html/.css/.js        图像工坊生成页
+│   ├── admin.html/.css/.js        后台管理页（独立静态资源）
+│   └── store.js           浏览器端作品库（IndexedDB 封装）
 ├── tools/
 │   ├── make_test_image.py 生成覆盖纯色/渐变/纹理的测试图
 │   ├── selftest.py        文字处理算法自检 + 量化质量指标
 │   ├── font_match_test.py 字体匹配 + 笔画校准专项验证
 │   ├── api_test.py        文字处理 API 契约测试
-│   ├── image_api_test.py  图像工坊端到端测试
+│   ├── image_api_test.py  图像工坊端到端测试（含泄露检查）
+│   ├── probe_multiref.py  探测中转站的多参照图支持方式
+│   ├── ui_shot.js         界面截图（CDP 驱动系统 Edge，可先注入数据）
 │   └── snapshot.py        打包完整快照 zip
 ├── samples/               测试图与输出
 ├── fonts/                 自定义字体目录（导入的字体放这里）
-├── data/                  中转站配置（含 API key，已 gitignore）
+├── data/                  配置目录（含 API key 与管理密码哈希，已 gitignore）
 ├── requirements.txt
 └── start.bat / start.sh
 ```

@@ -1,5 +1,6 @@
 /* ==========================================================================
-   图像工坊 · 前端交互
+   图像工坊 · 生成页交互
+   服务端只负责「转发中转站请求」，图片一律由浏览器存进本机 IndexedDB。
    ========================================================================== */
 (() => {
 'use strict';
@@ -7,19 +8,76 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmtSize = (n) => n < 1024 ? n + ' B'
-  : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(2) + ' MB';
+const fmtSize = (n) => !n ? '—'
+  : n < 1024 ? n + ' B'
+  : n < 1048576 ? (n / 1024).toFixed(0) + ' KB'
+  : (n / 1048576).toFixed(2) + ' MB';
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+const modKey = isMac ? '⌘' : 'Ctrl+';
+
+function fmtTime(ts) {
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return sameDay ? `今天 ${hm}`
+    : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+}
+
+/* ---------------------------------------------------------------- 工具定义 */
+const TOOLS = [
+  {
+    id: 'create', name: '自由生成', icon: '#i-spark',
+    title: 'AI 图片生成',
+    desc: '用一段提示词直接生成全新画面。描述越具体越容易得到想要的效果：主体 + 场景 + 风格 + 光线。',
+    maxRef: 4, needRef: false,
+    placeholder: '描述你想生成的画面…\n例如：生成一个小狗，坐在草地上，阳光明媚，高清摄影风格',
+    chips: ['生成一个小狗', '未来城市夜景，赛博朋克风格，霓虹灯', '极简扁平插画，女孩在窗边看书', '水墨风格的远山与孤舟'],
+  },
+  {
+    id: 'combine', name: '图像融合', icon: '#i-layers',
+    title: '图像融合',
+    desc: '上传主体图，把它融入你描述的全新场景、背景与光线里。可一次上传多张作为参考，多张会先合成为一张拼图再发送。',
+    maxRef: 4, needRef: true,
+    placeholder: '描述目标场景…\n例如：把主体放到海边日落场景中，柔和逆光，写实摄影风格',
+    chips: ['把主体放到海边日落场景中', '换成纯白背景的电商主图', '融入未来城市霓虹街头', '放进原木桌面的静物场景'],
+  },
+  {
+    id: 'portrait', name: '人物写真', icon: '#i-person',
+    title: '人物写真',
+    desc: '以参照图的人像为基准，生成新的写真风格与场景，保留人物特征。',
+    maxRef: 1, needRef: true,
+    placeholder: '描述想要的写真风格…\n例如：日系胶片质感，浅景深，窗边自然光',
+    chips: ['日系胶片质感，浅景深', '正装职业照，纯灰背景', '户外逆光，暖色调'],
+  },
+  {
+    id: 'product', name: '商品图', icon: '#i-box',
+    title: '商品图生成',
+    desc: '把商品放进干净有质感的场景，适合电商主图与详情页。',
+    maxRef: 1, needRef: true,
+    placeholder: '描述商品与场景…\n例如：大理石台面，柔和顶光，极简高级感',
+    chips: ['大理石台面，柔和顶光', '纯白背景无阴影', '原木与绿植的自然场景'],
+  },
+];
+
+const SIZES = [
+  { v: '1024x1024', label: '1024×1024', hint: '正方形' },
+  { v: '1536x1024', label: '1536×1024', hint: '横向 3:2' },
+  { v: '1024x1536', label: '1024×1536', hint: '竖向 2:3' },
+  { v: 'auto', label: '自动', hint: '由模型决定' },
+];
+const COUNTS = [1, 2, 3, 4];
 
 /* ---------------------------------------------------------------- 状态 */
 const S = {
-  providers: [],
-  activeId: null,
-  editingId: null,          // null = 新增
+  tool: TOOLS[0],
   size: '1024x1024',
   count: 1,
-  refFile: null,
-  refUrl: null,
-  images: [],               // [{data_url, url, bytes}]
+  refs: [],                 // [{file, url}]
+  status: null,
+  view: 'generate',
+  images: [],               // 本轮结果 [{data_url, url, bytes, recId}]
   current: 0,
   busy: false,
   timer: null,
@@ -27,6 +85,11 @@ const S = {
   controller: null,
   lastPrompt: '',
   lastMeta: {},
+  library: [],              // 作品库列表
+  search: '',
+  favOnly: false,
+  lbId: null,
+  autoSave: true,
 };
 
 /* ---------------------------------------------------------------- 通用 */
@@ -38,87 +101,123 @@ function toast(msg, kind = '') {
   setTimeout(() => {
     el.style.transition = 'opacity .25s'; el.style.opacity = '0';
     setTimeout(() => el.remove(), 260);
-  }, 2600);
+  }, 2800);
 }
 
 async function api(url, opt = {}) {
-  const r = await fetch(url, opt);
+  const r = await fetch(url, { credentials: 'same-origin', ...opt });
   let body = null;
-  try { body = await r.json(); } catch (_) {}
+  try { body = await r.json(); } catch (_) { /* 非 JSON */ }
   if (!r.ok) {
     const d = (body && body.detail) || {};
-    const err = new Error(
-      typeof d === 'string' ? d : (d.message || `HTTP ${r.status}`));
+    const err = new Error(typeof d === 'string' ? d : (d.message || `HTTP ${r.status}`));
     err.status = r.status;
-    err.detail = typeof d === 'object' ? d.detail : '';
-    err.hint = typeof d === 'object' ? d.hint : '';
+    err.detail = typeof d === 'object' ? (d.detail || '') : '';
+    err.hint = typeof d === 'object' ? (d.hint || '') : '';
     throw err;
   }
   return body;
 }
-const postJSON = (url, data, method = 'POST') => api(url, {
-  method, headers: { 'Content-Type': 'application/json' },
-  body: data === undefined ? undefined : JSON.stringify(data),
-});
 
-function showState(which) {
-  ['stateEmpty', 'stateLoading', 'stateError'].forEach(id => {
-    $(id).hidden = (id !== which);
-  });
-  $('result').hidden = (which !== null);
-}
-
-/* ---------------------------------------------------------------- 初始化 */
+/* ================================================================ 初始化 */
 (async function init() {
+  buildToolNav();
+  bindSidebar();
+  bindRefs();
   bindPrompt();
-  bindRef();
-  bindParams();
+  bindPills();
   bindGenerate();
   bindResult();
-  bindDrawer();
+  bindProjects();
+  bindLightbox();
+
+  $('genKey').textContent = modKey + '3';
+  $('prompt').placeholder = S.tool.placeholder;
 
   try {
-    const ov = await api('/api/image/overview');
-    S.providers = ov.providers || [];
-    S.activeId = ov.active_id || null;
-    renderProviderChip();
-    renderProviderList();
+    S.status = await api('/api/image/status');
   } catch (e) {
-    toast('无法读取配置：' + e.message, 'err');
+    S.status = { ready: false, model: '', message: '无法读取服务状态', hint: e.message };
   }
+  if (!S.status.ready) {
+    toast(`后台未就绪：${S.status.message}`, 'warn');
+  }
+
+  await refreshLibraryCount();
+  await refreshStorage();
+  renderToolChips();
 })();
 
-/* ---------------------------------------------------------------- 提示词 */
-function bindPrompt() {
-  const ta = $('prompt');
-  const upd = () => {
-    $('promptCount').textContent = `${ta.value.length} / 4000`;
-  };
-  ta.addEventListener('input', upd);
-  ta.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
-  });
-  upd();
-
-  $('quickPrompts').addEventListener('click', (e) => {
-    const b = e.target.closest('.chip');
-    if (!b) return;
-    ta.value = b.dataset.p || '';
-    ta.dispatchEvent(new Event('input'));
-    ta.focus();
+/* ================================================================ 侧栏 */
+function buildToolNav() {
+  $('toolNav').innerHTML = TOOLS.map(t => `
+    <button class="sb-item${t.id === S.tool.id ? ' on' : ''}" data-tool="${t.id}">
+      <svg class="ic" viewBox="0 0 24 24"><use href="${t.icon}"/></svg>
+      <span>${esc(t.name)}</span>
+    </button>`).join('');
+  $('toolNav').querySelectorAll('[data-tool]').forEach(el => {
+    el.addEventListener('click', () => selectTool(el.dataset.tool));
   });
 }
 
-/* ---------------------------------------------------------------- 参照图 */
-function bindRef() {
+function selectTool(id) {
+  const t = TOOLS.find(x => x.id === id);
+  if (!t) return;
+  // 从「作品库」点工具时要能切回生成视图——之前这里提前 return，
+  // 导致在作品库里点当前已选中的工具没有任何反应。
+  if (S.view !== 'generate') switchView('generate');
+  if (t.id === S.tool.id) return;
+
+  S.tool = t;
+  $('toolNav').querySelectorAll('[data-tool]').forEach(el =>
+    el.classList.toggle('on', el.dataset.tool === id));
+  $('toolTitle').textContent = t.title;
+  $('toolDesc').textContent = t.desc;
+  $('prompt').placeholder = t.placeholder;
+  // 超出新工具上限的参照图自动裁掉
+  while (S.refs.length > t.maxRef) removeRef(S.refs.length - 1);
+  renderToolChips();
+  closePop();
+}
+
+function bindSidebar() {
+  $('btnCollapse').addEventListener('click', () => {
+    const c = document.querySelector('.app').classList.toggle('collapsed');
+    localStorage.setItem('wb.sbCollapsed', c ? '1' : '0');
+  });
+  if (localStorage.getItem('wb.sbCollapsed') === '1') {
+    document.querySelector('.app').classList.add('collapsed');
+  }
+  document.querySelectorAll('[data-view]').forEach(el => {
+    el.addEventListener('click', () => switchView(el.dataset.view));
+  });
+}
+
+function switchView(v) {
+  S.view = v;
+  $('viewGenerate').hidden = v !== 'generate';
+  $('viewProjects').hidden = v !== 'projects';
+  document.querySelectorAll('.sb-item').forEach(el => {
+    const isView = el.dataset.view;
+    if (isView) el.classList.toggle('on', isView === v);
+    else if (v !== 'generate') el.classList.remove('on');
+  });
+  document.querySelectorAll('#toolNav [data-tool]').forEach(el =>
+    el.classList.toggle('on', v === 'generate' && el.dataset.tool === S.tool.id));
+  // 深链：/image#projects
+  history.replaceState(null, '', v === 'projects' ? '#projects' : location.pathname);
+  if (v === 'projects') refreshLibrary();
+}
+
+/* ================================================================ 参照图 */
+function bindRefs() {
   const dz = $('dropzone');
   const inp = $('refInput');
 
   inp.addEventListener('change', (e) => {
-    if (e.target.files?.[0]) setRef(e.target.files[0]);
+    addRefs([...e.target.files]);
     e.target.value = '';
   });
-
   ['dragenter', 'dragover'].forEach(t => dz.addEventListener(t, (e) => {
     e.preventDefault(); dz.classList.add('drag');
   }));
@@ -127,62 +226,135 @@ function bindRef() {
     if (t === 'dragleave' && e.relatedTarget) return;
     dz.classList.remove('drag');
   }));
-  dz.addEventListener('drop', (e) => {
-    const f = e.dataTransfer?.files?.[0];
-    if (f) setRef(f);
-  });
-
-  $('btnClearRef').addEventListener('click', (e) => {
-    e.preventDefault(); e.stopPropagation();
-    clearRef();
-  });
+  dz.addEventListener('drop', (e) => addRefs([...(e.dataTransfer?.files || [])]));
 }
 
-function setRef(file) {
-  if (!file.type.startsWith('image/')) { toast('请选择图片文件', 'err'); return; }
-  if (file.size > 8 * 1024 * 1024) { toast('参照图超过 8MB，请压缩后再用', 'err'); return; }
-  if (S.refUrl) URL.revokeObjectURL(S.refUrl);
-  S.refFile = file;
-  S.refUrl = URL.createObjectURL(file);
-  $('refThumb').src = S.refUrl;
-  $('refName').textContent = file.name;
-  $('refSize').textContent = `${fmtSize(file.size)} · ${file.type.replace('image/', '').toUpperCase()}`;
-  $('dzEmpty').hidden = true;
-  $('dzPreview').hidden = false;
-  $('btnClearRef').hidden = false;
+function addRefs(files) {
+  const room = S.tool.maxRef - S.refs.length;
+  if (room <= 0) {
+    toast(`「${S.tool.name}」最多 ${S.tool.maxRef} 张参照图`, 'warn');
+    return;
+  }
+  const accepted = [];
+  for (const f of files) {
+    if (accepted.length >= room) { toast(`超出上限，已忽略多余文件`, 'warn'); break; }
+    if (!f.type.startsWith('image/')) { toast(`跳过非图片文件：${f.name}`, 'warn'); continue; }
+    if (f.size > 8 * 1024 * 1024) { toast(`${f.name} 超过 8MB，已跳过`, 'err'); continue; }
+    accepted.push({ file: f, url: URL.createObjectURL(f) });
+  }
+  S.refs.push(...accepted);
+  renderRefs();
 }
 
-function clearRef() {
-  if (S.refUrl) URL.revokeObjectURL(S.refUrl);
-  S.refFile = null; S.refUrl = null;
-  $('refThumb').removeAttribute('src');
-  $('dzPreview').hidden = true;
-  $('dzEmpty').hidden = false;
-  $('btnClearRef').hidden = true;
-  $('refInput').value = '';
+function removeRef(i) {
+  const r = S.refs[i];
+  if (!r) return;
+  URL.revokeObjectURL(r.url);
+  S.refs.splice(i, 1);
+  renderRefs();
 }
 
-/* ---------------------------------------------------------------- 参数 */
-function bindParams() {
-  const wire = (id, key, cast = (v) => v) => {
-    $(id).addEventListener('click', (e) => {
-      const b = e.target.closest('button');
-      if (!b) return;
-      [...$(id).children].forEach(x => x.classList.toggle('on', x === b));
-      S[key] = cast(b.dataset.v);
+function renderRefs() {
+  const box = $('refStrip');
+  $('refCount').textContent = `${S.refs.length}/${S.tool.maxRef}`;
+  if (!S.refs.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = S.refs.map((r, i) => `
+    <div class="ref-thumb" data-i="${i}">
+      <img src="${r.url}" alt="参照图 ${i + 1}">
+      <span class="idx">${i + 1}</span>
+      <button title="移除"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+    </div>`).join('');
+  box.querySelectorAll('.ref-thumb').forEach(el => {
+    el.querySelector('button').addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      removeRef(+el.dataset.i);
     });
-  };
-  wire('segSize', 'size');
-  wire('segCount', 'count', Number);
+  });
 }
 
-/* ---------------------------------------------------------------- 生成 */
+/* ================================================================ 提示词 */
+function bindPrompt() {
+  const ta = $('prompt');
+  ta.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
+  });
+}
+
+function renderToolChips() {
+  $('chips').innerHTML = S.tool.chips.map(c =>
+    `<button class="chip" data-p="${esc(c)}">${esc(c)}</button>`).join('');
+  $('chips').querySelectorAll('.chip').forEach(b => b.addEventListener('click', () => {
+    const ta = $('prompt');
+    ta.value = b.dataset.p;
+    ta.focus();
+  }));
+}
+
+/* ================================================================ 弹出菜单 */
+function closePop() { $('popWrap').hidden = true; }
+
+function openPop(anchor, items, title) {
+  const wrap = $('popWrap');
+  wrap.hidden = false;
+  const old = document.querySelector('.pop');
+  if (old) old.remove();
+
+  const pop = document.createElement('div');
+  pop.className = 'pop';
+  pop.innerHTML = (title ? `<div class="pop-title">${esc(title)}</div>` : '')
+    + items.map(it => `<button data-v="${esc(it.v)}" class="${it.on ? 'on' : ''}">
+         <svg class="ic" viewBox="0 0 24 24"><use href="#i-check"/></svg>
+         <span>${esc(it.label)}</span></button>`).join('');
+  document.body.appendChild(pop);
+
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
+  const top = r.top - pop.offsetHeight - 8;
+  pop.style.top = (top < 8 ? r.bottom + 8 : top) + 'px';
+
+  pop.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    closePop();
+    anchor.dispatchEvent(new CustomEvent('picked', { detail: b.dataset.v }));
+  });
+  wrap.onclick = closePop;
+}
+
+function bindPills() {
+  const sz = $('pillSize'), ct = $('pillCount');
+  sz.addEventListener('click', () => openPop(sz, SIZES.map(s => ({
+    v: s.v, label: `${s.label}　${s.hint}`, on: s.v === S.size,
+  })), '尺寸'));
+  sz.addEventListener('picked', (e) => {
+    S.size = e.detail;
+    $('pillSizeText').textContent =
+      (SIZES.find(s => s.v === S.size) || {}).label || S.size;
+  });
+  ct.addEventListener('click', () => openPop(ct, COUNTS.map(n => ({
+    v: String(n), label: `${n} 张`, on: n === S.count,
+  })), '数量'));
+  ct.addEventListener('picked', (e) => {
+    S.count = Number(e.detail);
+    $('pillCountText').textContent = `${S.count} 张`;
+  });
+}
+
+/* ================================================================ 生成 */
 function bindGenerate() {
   $('btnGenerate').addEventListener('click', generate);
   $('btnCancel').addEventListener('click', cancel);
   $('btnRetry').addEventListener('click', generate);
   $('btnAgain').addEventListener('click', generate);
-  $('btnOpenConfig2').addEventListener('click', openDrawer);
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === '3') { e.preventDefault(); generate(); }
+  });
+}
+
+function showState(which) {
+  ['stateEmpty', 'stateLoading', 'stateError'].forEach(id => { $(id).hidden = id !== which; });
+  $('result').hidden = which !== null;
 }
 
 function startTimer() {
@@ -197,25 +369,51 @@ function stopTimer() { clearInterval(S.timer); S.timer = null; }
 
 function setBusy(on) {
   S.busy = on;
-  $('btnGenerate').disabled = on;
   $('btnGenerate').hidden = on;
   $('btnCancel').hidden = !on;
-  $('genHint').textContent = on
-    ? '正在生成，可点击取消'
-    : '约需 30~60 秒，请保持页面打开';
+}
+
+/**
+ * 多张参照图 → 合成一张拼图。
+ * 该中转站只稳定支持单张参照图（`image` 字段传数组会触发内容拦截），
+ * 因此多图时先按网格拼成一张再发送，并在界面上告知用户。
+ */
+async function composeRefs(refs) {
+  if (refs.length === 1) return refs[0].file;
+  const imgs = await Promise.all(refs.map(r => new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error('参照图解码失败'));
+    im.src = r.url;
+  })));
+  const cols = refs.length <= 2 ? refs.length : 2;
+  const rows = Math.ceil(refs.length / cols);
+  const cell = 640;
+  const cv = document.createElement('canvas');
+  cv.width = cols * cell; cv.height = rows * cell;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  imgs.forEach((im, i) => {
+    const cx = (i % cols) * cell, cy = Math.floor(i / cols) * cell;
+    const sc = Math.min(cell / im.naturalWidth, cell / im.naturalHeight);
+    const w = im.naturalWidth * sc, h = im.naturalHeight * sc;
+    ctx.drawImage(im, cx + (cell - w) / 2, cy + (cell - h) / 2, w, h);
+  });
+  const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.92));
+  return new File([blob], 'references.jpg', { type: 'image/jpeg' });
 }
 
 async function generate() {
   if (S.busy) return;
   const prompt = $('prompt').value.trim();
-  if (!prompt) {
-    toast('请先填写提示词', 'err');
-    $('prompt').focus();
+  if (!prompt) { toast('请先填写提示词', 'err'); $('prompt').focus(); return; }
+  if (S.status && !S.status.ready) {
+    toast(`后台未就绪：${S.status.message}`, 'err');
     return;
   }
-  if (!S.providers.some(p => p.enabled)) {
-    toast('没有启用的中转站配置', 'err');
-    openDrawer();
+  if (S.tool.needRef && !S.refs.length) {
+    toast(`「${S.tool.name}」需要至少上传 1 张参照图`, 'err');
     return;
   }
 
@@ -223,39 +421,55 @@ async function generate() {
   setBusy(true);
   showState('stateLoading');
   startTimer();
-
-  // 骨架屏：按生成数量给格子
-  const sk = $('skeletonGrid');
-  sk.innerHTML = Array.from({ length: S.count }, () => '<div class="sk"></div>').join('');
-  $('loadingTitle').textContent = S.refFile ? '正在按参照图生成…' : '正在生成…';
-  $('loadingSub').textContent = `模型：${activeModel()} · 尺寸 ${S.size === 'auto' ? '自动' : S.size} · ${S.count} 张`;
+  $('loadingTitle').textContent = S.refs.length ? '正在按参照图生成…' : '正在生成…';
+  $('loadingSub').textContent =
+    `模型 ${S.status?.model || '—'} · ${S.size === 'auto' ? '自动尺寸' : S.size} · ${S.count} 张`
+    + (S.refs.length > 1 ? ` · 已把 ${S.refs.length} 张参照图合成为拼图` : '');
+  $('skGrid').innerHTML = Array.from({ length: S.count }, () => '<div class="sk"></div>').join('');
 
   const fd = new FormData();
   fd.append('prompt', prompt);
   fd.append('size', S.size);
   fd.append('n', String(S.count));
-  if (S.activeId) fd.append('provider_id', S.activeId);
-  if (S.refFile) fd.append('reference', S.refFile, S.refFile.name);
+  S.refs.forEach((r, i) =>
+    fd.append('references', r.file, r.file.name || `ref${i + 1}.png`));
 
   S.controller = new AbortController();
   try {
-    const res = await api('/api/image/generate', {
-      method: 'POST', body: fd, signal: S.controller.signal,
-    });
+    let res;
+    try {
+      res = await api('/api/image/generate', {
+        method: 'POST', body: fd, signal: S.controller.signal,
+      });
+    } catch (e) {
+      // 多图被拦时，拼成一张再试一次
+      if (S.refs.length > 1 && e.name !== 'AbortError') {
+        $('loadingSub').textContent = '多张参照图被拒，正在改用拼图方式重试…';
+        const merged = await composeRefs(S.refs);
+        const fd2 = new FormData();
+        fd2.append('prompt', prompt);
+        fd2.append('size', S.size);
+        fd2.append('n', String(S.count));
+        fd2.append('references', merged, merged.name);
+        res = await api('/api/image/generate', {
+          method: 'POST', body: fd2, signal: S.controller.signal,
+        });
+        toast('已改用拼图方式生成', 'warn');
+      } else {
+        throw e;
+      }
+    }
     stopTimer();
-    S.images = res.images || [];
+    S.images = (res.images || []).map(im => ({ ...im, recId: null }));
     S.current = 0;
     S.lastMeta = res;
     renderResult(res);
     toast(`生成完成，用时 ${res.elapsed}s`, 'ok');
+    if (S.autoSave) await autoSave(res);
   } catch (e) {
     stopTimer();
-    if (e.name === 'AbortError') {
-      showState('stateEmpty');
-      toast('已取消生成');
-    } else {
-      renderError(e);
-    }
+    if (e.name === 'AbortError') { showState('stateEmpty'); toast('已取消生成'); }
+    else renderError(e);
   } finally {
     setBusy(false);
     S.controller = null;
@@ -267,315 +481,322 @@ function cancel() {
   stopTimer();
 }
 
-/* ---------------------------------------------------------------- 结果 */
+/* ================================================================ 存进作品库 */
+async function autoSave(res) {
+  if (!window.ImgStore) return;
+  let saved = 0;
+  for (const im of S.images) {
+    const src = im.data_url || '';
+    if (!src.startsWith('data:')) continue;
+    try {
+      const rec = await ImgStore.save(src, {
+        prompt: S.lastPrompt,
+        revised: im.revised_prompt || '',
+        model: res.model || '',
+        size: res.size || S.size,
+        tool: S.tool.id,
+        toolName: S.tool.name,
+        usedRef: !!res.used_reference,
+      });
+      im.recId = rec.id;
+      saved++;
+    } catch (e) {
+      toast('本地保存失败：' + e.message, 'err');
+      return;
+    }
+  }
+  if (saved) {
+    $('resSaved').hidden = false;
+    $('resSaved').textContent = `已存入作品库（${saved} 张）`;
+    await refreshLibraryCount();
+    await refreshStorage();
+  }
+}
+
+/* ================================================================ 结果 */
 function renderResult(res) {
   showState(null);
   $('resSize').textContent = `尺寸 ${res.size || S.size}`;
-  $('resModel').textContent = res.model || activeModel();
+  $('resModel').textContent = res.model || '—';
   $('resElapsed').textContent = `耗时 ${res.elapsed}s`;
   $('resRef').hidden = !res.used_reference;
   $('resPrompt').textContent = S.lastPrompt;
+  $('resSaved').hidden = true;
+  $('btnFav').classList.remove('on');
 
-  const revised = (res.images?.[0]?.revised_prompt) || '';
+  const revised = res.images?.[0]?.revised_prompt || '';
   $('resRevisedWrap').hidden = !revised;
   $('resRevised').textContent = revised;
 
+  const nav = $('canvasNav');
+  nav.hidden = S.images.length <= 1;
+  nav.innerHTML = S.images.length <= 1 ? ''
+    : `${S.images.map((_, i) => `<button data-i="${i}" title="第 ${i + 1} 张">${i + 1}</button>`).join('')}`;
+  nav.querySelectorAll('button').forEach(b =>
+    b.addEventListener('click', () => showImage(+b.dataset.i)));
+  markNav();
+
   showImage(0);
-  renderThumbs();
+}
+
+function markNav() {
+  $('canvasNav').querySelectorAll('button').forEach((b, i) =>
+    b.classList.toggle('on', i === S.current));
 }
 
 function showImage(i) {
+  const im = S.images[i];
+  if (!im) return;
   S.current = i;
-  const img = S.images[i];
-  if (!img) return;
-  $('resultImg').src = img.data_url || img.url || '';
-  [...$('thumbs').children].forEach((el, k) => el.classList.toggle('on', k === i));
-}
-
-function renderThumbs() {
-  const box = $('thumbs');
-  if (S.images.length <= 1) { box.hidden = true; box.innerHTML = ''; return; }
-  box.hidden = false;
-  box.innerHTML = S.images.map((im, i) =>
-    `<div class="thumb${i === 0 ? ' on' : ''}" data-i="${i}">
-       <img src="${esc(im.data_url || im.url)}" alt="结果 ${i + 1}">
-     </div>`).join('');
-  [...box.children].forEach(el => el.addEventListener('click', () => showImage(+el.dataset.i)));
+  $('resultImg').src = im.data_url || im.url || '';
+  markNav();
+  $('btnFav').classList.remove('on');
 }
 
 function bindResult() {
-  $('btnDownload').addEventListener('click', () => {
-    const img = S.images[S.current];
-    if (!img) return;
-    const a = document.createElement('a');
-    a.href = img.data_url || img.url;
-    a.download = `ai-${Date.now()}.png`;
-    a.click();
-    toast('已开始下载', 'ok');
+  $('btnDownload').addEventListener('click', async () => {
+    const im = S.images[S.current];
+    if (!im) return;
+    await downloadImage(im);
+  });
+
+  $('btnFav').addEventListener('click', async () => {
+    const im = S.images[S.current];
+    if (!im || !im.recId) { toast('这张图未存入作品库', 'warn'); return; }
+    const rec = await ImgStore.get(im.recId);
+    if (!rec) { toast('记录已不存在', 'err'); return; }
+    await ImgStore.update(im.recId, { favorite: !rec.favorite });
+    $('btnFav').classList.toggle('on', !rec.favorite);
+    toast(!rec.favorite ? '已加入收藏' : '已取消收藏', 'ok');
+    await refreshLibraryCount();
   });
 
   $('btnOpenNew').addEventListener('click', () => {
-    const img = S.images[S.current];
-    if (!img) return;
+    const im = S.images[S.current];
+    if (!im) return;
     const w = window.open('', '_blank');
     if (!w) { toast('浏览器拦截了新窗口', 'err'); return; }
     w.document.write(
-      `<title>生成结果</title><body style="margin:0;background:#0d0e14;display:grid;place-items:center;height:100vh">`
-      + `<img src="${img.data_url || img.url}" style="max-width:100%;max-height:100%">`);
+      `<title>生成结果</title><body style="margin:0;background:#0a0a0a;display:grid;place-items:center;height:100vh">`
+      + `<img src="${im.data_url || im.url}" style="max-width:100%;max-height:100%">`);
   });
 }
 
-/* ---------------------------------------------------------------- 错误 */
+async function downloadImage(im) {
+  const a = document.createElement('a');
+  a.href = im.data_url || im.url;
+  a.download = `ai-${im.recId || Date.now()}.png`;
+  a.click();
+  toast('已开始下载', 'ok');
+}
+
 function renderError(e) {
   showState('stateError');
   $('errTitle').textContent = e.status === 504 ? '生成超时' : '生成失败';
   $('errMsg').textContent = e.message || '未知错误';
-
   $('errHint').hidden = !e.hint;
   $('errHint').textContent = e.hint || '';
-
   const detail = (e.detail || '').trim();
   $('errDetailWrap').hidden = !detail;
   $('errDetail').textContent = detail;
 }
 
-/* ---------------------------------------------------------------- 配置 */
-function activeProvider() {
-  return S.providers.find(p => p.id === S.activeId)
-      || S.providers.find(p => p.enabled) || null;
-}
-function activeModel() {
-  return (activeProvider() || {}).model || 'gpt-image-2';
+/* ================================================================ 作品库 */
+function bindProjects() {
+  $('projSearch').addEventListener('input', (e) => {
+    S.search = e.target.value.trim().toLowerCase();
+    renderLibrary();
+  });
+  $('btnFavFilter').addEventListener('click', () => {
+    S.favOnly = !S.favOnly;
+    $('btnFavFilter').classList.toggle('on', S.favOnly);
+    renderLibrary();
+  });
+  $('btnClearAll').addEventListener('click', async () => {
+    const n = S.library.length;
+    if (!n) { toast('作品库已经是空的'); return; }
+    if (!confirm(`确定清空作品库里的 ${n} 张图片？此操作不可恢复。`)) return;
+    await ImgStore.clear();
+    await refreshLibrary();
+    await refreshStorage();
+    toast('已清空作品库', 'ok');
+  });
 }
 
-function renderProviderChip() {
-  const p = activeProvider();
-  const chip = $('providerChip');
-  if (p) {
-    $('providerName').textContent = p.name;
-    chip.className = 'provider-chip ok';
-    chip.title = `${p.name} · ${p.base_url} · ${p.model}`;
-  } else {
-    const anyDisabled = S.providers.some(x => x.has_key);
-    $('providerName').textContent = anyDisabled ? '配置已全部禁用' : '未配置';
-    chip.className = 'provider-chip warn';
-    chip.title = '点击右上角「中转站配置」进行设置';
+async function refreshLibraryCount() {
+  if (!window.ImgStore) return;
+  try {
+    $('projCount').textContent = await ImgStore.count();
+  } catch (_) { $('projCount').textContent = '0'; }
+}
+
+async function refreshStorage() {
+  if (!window.ImgStore) return;
+  try {
+    const used = await ImgStore.usage();
+    $('storageBox').hidden = false;
+    $('storageText').textContent = fmtSize(used);
+    const q = await ImgStore.quota();
+    const pct = q && q.quota ? Math.min(100, (used / q.quota) * 100) : 0;
+    $('storageBar').style.width = (q ? pct : (used ? 6 : 0)) + '%';
+    if (q && pct > 80) toast('浏览器存储空间将满，建议清理作品库', 'warn');
+  } catch (_) { /* 忽略 */ }
+}
+
+async function refreshLibrary() {
+  if (!window.ImgStore) return;
+  try {
+    S.library = await ImgStore.list();
+  } catch (e) {
+    S.library = [];
+    toast('读取本机作品库失败：' + e.message, 'err');
   }
+  $('projCount').textContent = S.library.length;
+  renderLibrary();
+  refreshStorage();          // 不 await：容量统计不必阻塞画廊渲染
 }
 
-function renderProviderList() {
-  const box = $('providerList');
-  if (!S.providers.length) {
-    box.innerHTML = `<div class="inline-msg info">还没有配置。点击下方「新增配置」，填入中转站地址与 API Key 即可开始。</div>`;
+function filtered() {
+  return S.library.filter(r => {
+    if (S.favOnly && !r.favorite) return false;
+    if (S.search && !(r.prompt || '').toLowerCase().includes(S.search)) return false;
+    return true;
+  });
+}
+
+function renderLibrary() {
+  const rows = filtered();
+  const grid = $('projGrid');
+  const empty = $('projEmpty');
+
+  if (!rows.length) {
+    grid.innerHTML = '';
+    empty.hidden = false;
+    const hasAny = S.library.length > 0;
+    $('projEmptyTitle').textContent = hasAny ? '没有匹配的作品' : '作品库还是空的';
+    $('projEmptyDesc').textContent = hasAny
+      ? '换个关键词，或取消「只看收藏」'
+      : '生成一张图片，它会自动出现在这里';
     return;
   }
-  box.innerHTML = S.providers.map(p => `
-    <div class="pcard${p.enabled ? '' : ' disabled'}${p.id === S.activeId ? ' active' : ''}" data-id="${p.id}">
-      <div class="pcard-top">
-        <span class="pcard-name" title="${esc(p.name)}">${esc(p.name)}</span>
-        ${p.id === S.activeId ? '<span class="badge-current">使用中</span>' : ''}
+  empty.hidden = true;
+  grid.innerHTML = rows.map(r => {
+    const url = r.thumb ? ImgStore.bufferToURL(r.thumb, r.thumbMime) : '';
+    return `
+    <div class="pcard" data-id="${r.id}">
+      <div class="pcard-img" data-act="open">
+        ${url ? `<img src="${url}" alt="" loading="lazy">` : ''}
+        <button class="pcard-star${r.favorite ? ' on' : ''}" data-act="fav" title="收藏">
+          <svg class="ic" viewBox="0 0 24 24"><use href="#${r.favorite ? 'i-star-fill' : 'i-star'}"/></svg>
+        </button>
+        <div class="hov"><p>${esc(r.prompt || '（无提示词）')}</p></div>
       </div>
-      <div class="pcard-rows">
-        <div class="pcard-row"><span class="k">地址</span><span class="v">${esc(p.base_url)}</span></div>
-        <div class="pcard-row"><span class="k">模型</span><span class="v">${esc(p.model)}</span></div>
-        <div class="pcard-row"><span class="k">Key</span><span class="v">${esc(p.api_key || '（未设置）')}</span></div>
-        ${p.note ? `<div class="pcard-row"><span class="k">备注</span><span class="v">${esc(p.note)}</span></div>` : ''}
+      <div class="pcard-foot">
+        <span class="pcard-time">${fmtTime(r.createdAt)}</span>
+        <span class="acts">
+          <button class="icon-act" data-act="down" title="下载"><svg class="ic" viewBox="0 0 24 24"><use href="#i-download"/></svg></button>
+          <button class="icon-act danger" data-act="del" title="删除"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg></button>
+        </span>
       </div>
-      <div class="pcard-actions">
-        <button class="mini ${p.enabled ? 'on' : ''}" data-act="toggle">${p.enabled ? '已启用' : '已禁用'}</button>
-        ${p.enabled && p.id !== S.activeId ? '<button class="mini" data-act="activate">设为使用</button>' : ''}
-        <button class="mini" data-act="test">测试</button>
-        <button class="mini" data-act="edit">编辑</button>
-        <button class="mini danger" data-act="del">删除</button>
-      </div>
-      <div class="inline-msg" data-msg hidden></div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
-  box.querySelectorAll('.pcard').forEach(card => {
-    const id = card.dataset.id;
+  grid.querySelectorAll('.pcard').forEach(card => {
     card.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-act]');
-      if (!btn) return;
-      e.stopPropagation();
-      handleCardAction(id, btn.dataset.act, card);
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      const id = card.dataset.id;
+      if (act === 'fav') { e.stopPropagation(); toggleFav(id); }
+      else if (act === 'del') { e.stopPropagation(); deleteRec(id); }
+      else if (act === 'down') { e.stopPropagation(); downloadRec(id); }
+      else openLightbox(id);
     });
   });
 }
 
-async function handleCardAction(id, act, card) {
-  const p = S.providers.find(x => x.id === id);
-  if (!p) return;
-  const msg = card.querySelector('[data-msg]');
-
-  try {
-    if (act === 'toggle') {
-      const r = await postJSON(`/api/image/providers/${id}/toggle`, {});
-      S.providers = r.providers; S.activeId = r.active_id || S.activeId;
-      renderProviderList(); renderProviderChip();
-      toast(p.enabled ? '已禁用' : '已启用', 'ok');
-
-    } else if (act === 'activate') {
-      const r = await postJSON(`/api/image/providers/${id}/activate`, {});
-      S.providers = r.providers; S.activeId = r.active_id;
-      renderProviderList(); renderProviderChip();
-      toast(`已切换到「${p.name}」`, 'ok');
-
-    } else if (act === 'test') {
-      msg.hidden = false; msg.className = 'inline-msg info';
-      msg.textContent = '正在测试连接…';
-      const r = await postJSON(`/api/image/providers/${id}/test`, {});
-      const info = r.result || {};
-      if (info.model_found === false) {
-        msg.className = 'inline-msg err';
-        msg.textContent = `连接成功（${info.elapsed}s，${info.model_count} 个模型），`
-          + `但没有找到模型「${p.model}」。`
-          + (info.matched?.length ? ` 相近的有：${info.matched.join('、')}` : '');
-      } else {
-        msg.className = 'inline-msg ok';
-        msg.textContent = `连接正常 · 耗时 ${info.elapsed}s · 可用模型 ${info.model_count} 个`
-          + (info.model_found ? ` · 已找到 ${p.model}` : '');
-      }
-
-    } else if (act === 'edit') {
-      openForm(p);
-
-    } else if (act === 'del') {
-      if (!confirm(`确定删除配置「${p.name}」？此操作不可撤销。`)) return;
-      const r = await postJSON(`/api/image/providers/${id}`, undefined, 'DELETE');
-      S.providers = r.providers;
-      if (S.activeId === id) S.activeId = null;
-      renderProviderList(); renderProviderChip();
-      toast('已删除', 'ok');
-    }
-  } catch (e) {
-    msg.hidden = false; msg.className = 'inline-msg err';
-    msg.textContent = e.message + (e.hint ? ` —— ${e.hint}` : '');
-  }
+async function toggleFav(id) {
+  const rec = await ImgStore.get(id);
+  if (!rec) return;
+  await ImgStore.update(id, { favorite: !rec.favorite });
+  const row = S.library.find(r => r.id === id);
+  if (row) row.favorite = !rec.favorite;
+  renderLibrary();
 }
 
-/* ---------------------------------------------------------------- 抽屉 */
-function bindDrawer() {
-  $('btnOpenConfig').addEventListener('click', openDrawer);
-  $('btnCloseDrawer').addEventListener('click', closeDrawer);
-  $('mask').addEventListener('click', closeDrawer);
-  $('btnAdd').addEventListener('click', () => openForm(null));
-  $('btnCancelForm').addEventListener('click', closeForm);
-  $('btnEye').addEventListener('click', () => {
-    const el = $('fKey');
-    el.type = el.type === 'password' ? 'text' : 'password';
-  });
-  $('btnTestInline').addEventListener('click', () => testInline());
-  $('pForm').addEventListener('submit', (e) => { e.preventDefault(); saveForm(); });
+async function deleteRec(id) {
+  const rec = await ImgStore.get(id);
+  if (!rec) return;
+  if (!confirm('删除这张图片？')) return;
+  await ImgStore.remove(id);
+  S.library = S.library.filter(r => r.id !== id);
+  renderLibrary();
+  await refreshLibraryCount();
+  await refreshStorage();
+  toast('已删除', 'ok');
+}
 
+async function downloadRec(id) {
+  const rec = await ImgStore.get(id);
+  if (!rec) return;
+  const url = ImgStore.bufferToURL(rec.full, rec.mime);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ai-${id}.png`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/* ================================================================ 灯箱 */
+function bindLightbox() {
+  $('lbClose').addEventListener('click', closeLightbox);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('drawer').hidden) closeDrawer();
+    if (e.key === 'Escape') {
+      if (!$('lightbox').hidden) closeLightbox();
+      else closePop();
+    }
   });
 }
 
-function openDrawer() {
-  $('mask').hidden = false;
-  $('drawer').hidden = false;
-}
-function closeDrawer() {
-  $('mask').hidden = true;
-  $('drawer').hidden = true;
-  closeForm();
+let lbURL = null;
+
+async function openLightbox(id) {
+  const rec = await ImgStore.get(id);
+  if (!rec) { toast('记录已不存在', 'err'); return; }
+  S.lbId = id;
+  if (lbURL) URL.revokeObjectURL(lbURL);
+  lbURL = ImgStore.bufferToURL(rec.full, rec.mime);
+  $('lbImg').src = lbURL;
+  $('lbPrompt').textContent = rec.prompt || '（无提示词）';
+  $('lbMeta').innerHTML = [
+    rec.size && `尺寸 ${esc(rec.size)}`,
+    rec.model && `模型 ${esc(rec.model)}`,
+    rec.toolName && `工具 ${esc(rec.toolName)}`,
+    rec.usedRef && '含参照图',
+    rec.width && `${rec.width}×${rec.height}`,
+    fmtSize(rec.bytes),
+    fmtTime(rec.createdAt),
+  ].filter(Boolean).map(t => `<span class="tag">${t}</span>`).join('');
+  $('lbFavText').textContent = rec.favorite ? '取消收藏' : '收藏';
+  $('lbFav').classList.toggle('on', rec.favorite);
+  $('lightbox').hidden = false;
 }
 
-function openForm(p) {
-  S.editingId = p ? p.id : null;
-  $('formTitle').textContent = p ? '编辑配置' : '新增配置';
-  $('fName').value = p?.name || '';
-  $('fBase').value = p?.base_url || 'https://code.linlong520.com';
-  $('fKey').value = p?.api_key || '';
-  $('fModel').value = p?.model || 'gpt-image-2';
-  $('fNote').value = p?.note || '';
-  $('fEnabled').checked = p ? !!p.enabled : true;
-  $('fKey').type = 'password';
-  $('keyTip').textContent = p
-    ? '留空表示不修改当前 Key'
-    : '仅保存在本机 data/ 目录，不会进版本库';
-  const m = $('inlineMsg'); m.hidden = true; m.textContent = '';
-  $('pForm').hidden = false;
-  $('pForm').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  if (!p) setTimeout(() => $('fName').focus(), 60);
-}
-function closeForm() {
-  $('pForm').hidden = true;
-  S.editingId = null;
+function closeLightbox() {
+  $('lightbox').hidden = true;
+  $('lbImg').removeAttribute('src');
+  if (lbURL) { URL.revokeObjectURL(lbURL); lbURL = null; }
+  S.lbId = null;
 }
 
-function formPayload() {
-  return {
-    name: $('fName').value.trim() || '未命名中转站',
-    base_url: $('fBase').value.trim(),
-    api_key: $('fKey').value.trim(),
-    model: $('fModel').value.trim() || 'gpt-image-2',
-    note: $('fNote').value.trim(),
-    enabled: $('fEnabled').checked,
-  };
-}
-
-function inlineMsg(text, kind) {
-  const m = $('inlineMsg');
-  m.hidden = false; m.className = 'inline-msg ' + kind; m.textContent = text;
-}
-
-async function saveForm() {
-  const data = formPayload();
-  if (!data.base_url) return inlineMsg('请填写中转站地址', 'err');
-  if (!S.editingId && !data.api_key) return inlineMsg('请填写 API Key', 'err');
-
-  $('btnSave').disabled = true;
-  try {
-    const r = S.editingId
-      ? await postJSON(`/api/image/providers/${S.editingId}`, data, 'PUT')
-      : await postJSON('/api/image/providers', data);
-    S.providers = r.providers;
-    const ov = await api('/api/image/overview');
-    S.activeId = ov.active_id;
-    renderProviderList(); renderProviderChip();
-    closeForm();
-    toast(S.editingId ? '已保存' : '已新增配置', 'ok');
-  } catch (e) {
-    inlineMsg(e.message + (e.hint ? ` —— ${e.hint}` : ''), 'err');
-  } finally {
-    $('btnSave').disabled = false;
+document.addEventListener('click', async (e) => {
+  const id = S.lbId;
+  if (!id) return;
+  if (e.target.closest('#lbFav')) {
+    await toggleFav(id); await openLightbox(id);
+  } else if (e.target.closest('#lbDown')) {
+    await downloadRec(id);
+  } else if (e.target.closest('#lbDel')) {
+    await deleteRec(id); closeLightbox();
   }
-}
-
-async function testInline() {
-  const data = formPayload();
-  if (!data.base_url || !data.api_key) {
-    return inlineMsg('测试需要先填写地址与 API Key', 'err');
-  }
-  inlineMsg('正在测试连接…', 'info');
-  try {
-    // 未保存时用"临时保存再删"的方式太重，这里直接走新增后的测试体验：
-    // 先保存（若有编辑则更新），再测试
-    const r = S.editingId
-      ? await postJSON(`/api/image/providers/${S.editingId}`, data, 'PUT')
-      : await postJSON('/api/image/providers', data);
-    S.providers = r.providers;
-    const id = S.editingId || (r.provider && r.provider.id);
-    S.editingId = id;
-    const t = await postJSON(`/api/image/providers/${id}/test`, {});
-    const info = t.result || {};
-    const ov = await api('/api/image/overview');
-    S.activeId = ov.active_id;
-    renderProviderList(); renderProviderChip();
-    $('formTitle').textContent = '编辑配置';
-    $('keyTip').textContent = '留空表示不修改当前 Key';
-    if (info.model_found === false) {
-      inlineMsg(`连接成功（${info.elapsed}s，${info.model_count} 个模型），但没有找到模型「${data.model}」`
-        + (info.matched?.length ? `；相近的有：${info.matched.join('、')}` : ''), 'err');
-    } else {
-      inlineMsg(`连接正常 · 耗时 ${info.elapsed}s · 可用模型 ${info.model_count} 个`
-        + (info.model_found ? ` · 已找到 ${data.model}` : ''), 'ok');
-    }
-  } catch (e) {
-    inlineMsg(e.message + (e.hint ? ` —— ${e.hint}` : ''), 'err');
-  }
-}
+});
 
 })();

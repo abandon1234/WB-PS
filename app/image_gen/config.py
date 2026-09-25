@@ -96,8 +96,12 @@ def _mask_key(key: str) -> str:
     return f"{key[:6]}{'*' * 6}{key[-4:]}"
 
 
-def public_view(p: Dict[str, Any], reveal: bool = True) -> Dict[str, Any]:
-    """对外暴露的配置视图。reveal=False 时把 key 打码。"""
+def public_view(p: Dict[str, Any], reveal: bool = False) -> Dict[str, Any]:
+    """对外暴露的配置视图。
+
+    **默认打码**——明文 key 只允许在服务端内部流转（`get_provider` 返回原始值），
+    任何走到 HTTP 响应的路径都必须经过这里。
+    """
     out = dict(p)
     out["api_key"] = (p.get("api_key") or "") if reveal else _mask_key(p.get("api_key") or "")
     out["has_key"] = bool((p.get("api_key") or "").strip())
@@ -106,9 +110,33 @@ def public_view(p: Dict[str, Any], reveal: bool = True) -> Dict[str, Any]:
 
 # ------------------------------------------------------------------ CRUD
 
-def list_providers(reveal: bool = True) -> List[Dict[str, Any]]:
+def list_providers(reveal: bool = False) -> List[Dict[str, Any]]:
     data = load()
     return [public_view(p, reveal) for p in data.get("providers", [])]
+
+
+def public_status() -> Dict[str, Any]:
+    """给生成页用的状态：**不含地址、不含 key、不含明文配置**。
+
+    生成页只需要知道「能不能用」和「用的什么模型」。
+    """
+    active = active_provider()
+    if active is None:
+        has_any = bool(load().get("providers", []))
+        return {
+            "ready": False,
+            "model": DEFAULT_MODEL,
+            "sizes": list(ALLOWED_SIZES),
+            "message": "后台尚未启用任何中转站" if has_any else "后台尚未配置中转站",
+            "hint": "请前往后台管理完成配置",
+        }
+    return {
+        "ready": True,
+        "model": active.get("model") or DEFAULT_MODEL,
+        "sizes": list(ALLOWED_SIZES),
+        "message": "就绪",
+        "hint": "",
+    }
 
 
 def get_provider(pid: str) -> Optional[Dict[str, Any]]:

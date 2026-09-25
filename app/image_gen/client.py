@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_TIMEOUT = 300
 MAX_PROMPT_LEN = 4000
+MAX_REFERENCES = 4
+MAX_REF_BYTES = 8 * 1024 * 1024
 
 
 class GenError(RuntimeError):
@@ -109,16 +111,17 @@ def _extract_error(status: int, body: bytes) -> Tuple[str, str]:
 
 def generate(provider: Dict[str, Any], prompt: str,
              size: str = "1024x1024", n: int = 1,
-             reference: Optional[Tuple[bytes, str]] = None,
+             references: Optional[List[Tuple[bytes, str]]] = None,
              timeout: int = DEFAULT_TIMEOUT) -> Dict[str, Any]:
     """调用中转站生成图片。
 
     Args:
-        provider:  配置项（含 base_url / api_key / model / proxy）。
-        prompt:    提示词。
-        size:      尺寸，如 1024x1024。
-        n:         生成数量（1~4）。
-        reference: (图片字节, 文件名)，传入则作为参照图。
+        provider:   配置项（含 base_url / api_key / model / proxy）。
+        prompt:     提示词。
+        size:       尺寸，如 1024x1024。
+        n:          生成数量（1~4）。
+        references: [(图片字节, 文件名), ...]，传入则作为条件输入；
+                    多张会以数组形式一起下发。
 
     Returns:
         {"images": [...], "elapsed": ..., "used_reference": bool, ...}
@@ -150,13 +153,17 @@ def generate(provider: Dict[str, Any], prompt: str,
     }
 
     # 参照图：走 generations 的 image 字段（标准 edits 接口多数中转站未实现）
+    refs = [r for r in (references or []) if r and r[0]][:MAX_REFERENCES]
     used_ref = False
-    if reference and reference[0]:
-        data, _fn = reference
-        if len(data) > 8 * 1024 * 1024:
-            raise GenError("参照图过大（超过 8MB）", hint="请压缩后重试")
-        ext = "jpeg" if data[:2] == b"\xff\xd8" else "png"
-        payload["image"] = f"data:image/{ext};base64," + base64.b64encode(data).decode()
+    if refs:
+        urls: List[str] = []
+        for data, _fn in refs:
+            if len(data) > MAX_REF_BYTES:
+                raise GenError(f"参照图过大（{len(data) / 1048576:.1f}MB，上限 8MB）",
+                               hint="请压缩后再试")
+            ext = "jpeg" if data[:2] == b"\xff\xd8" else "png"
+            urls.append(f"data:image/{ext};base64," + base64.b64encode(data).decode())
+        payload["image"] = urls[0] if len(urls) == 1 else urls
         used_ref = True
 
     url = f"{base}/v1/images/generations"
@@ -232,6 +239,7 @@ def generate(provider: Dict[str, Any], prompt: str,
         "images": images,
         "elapsed": round(elapsed, 1),
         "used_reference": used_ref,
+        "reference_count": len(refs),
         "endpoint": "/v1/images/generations",
         "model": model,
         "size": size,
