@@ -623,6 +623,24 @@ python tools/api_test.py              # 接口契约测试（需服务已启动�
 
 ## 版本管理
 
+### 远端仓库与同步约定
+
+- 远端：**私有仓库** `abandon1234/WB-PS`（GitHub），默认分支 `master`
+- **每轮改动结束就 `git commit`**，不用等我开口
+- **`git push` 之前先问我**，确认后再推上去
+- 提交信息用中文、动词短语开头（与现有历史一致），标题一行 + 空行 + 要点
+- 提交前扫一眼 `git status`，下面这些不该出现：
+  `data/`（API key 与密码哈希）、`fonts/`（版权字体）、`node_modules/`
+  `samples/out/`、`cloudflare/public/static|assets/`（同步产物）、`.workbuddy/` 下的临时文件
+
+**远端走 SSH**（`git@github.com:abandon1234/WB-PS.git`）：本机的 `github.com:443`
+被网络拦住，HTTPS 推不上去，只有 SSH 的 22 端口通。密钥在 `~/.ssh/id_ed25519`，
+公钥已加进 GitHub 账号；换机器时重新配一次即可。
+
+> 顺带记一笔环境问题：GitHub CLI（装在 `C:\Program Files\GitHub CLI\gh.exe`，没进 PATH）
+> 因为 OAuth 端点在 `github.com` 上，设备码登录会失败；GitHub MCP 的建仓接口也返回 403。
+> 所以建仓是手工在网页做的，日常推送走 SSH。
+
 项目已初始化 Git 仓库，首个版本标记为 `v1.0.0`。
 
 ```bash
