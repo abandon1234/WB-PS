@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>图片文字处理工具 · OCR 无痕编辑</title>
-<link rel="stylesheet" href="/static/shell.css?v=3.1">
-<link rel="stylesheet" href="/static/style.css?v=3.1">
+<title>图片工具 · 无痕改字 &amp; 图像生成</title>
+<link rel="stylesheet" href="/static/shell.css?v=3.4">
+<link rel="stylesheet" href="/static/style.css?v=3.4">
+<link rel="stylesheet" href="/static/image.css?v=3.4">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%237ee04a'/><text x='50' y='72' font-size='62' text-anchor='middle' fill='%230a1503' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
@@ -16,249 +17,474 @@
 
   <main class="main">
 
-  <header class="topbar">
-  <div class="page-title">
-    <h1>无痕改字</h1>
-    <p class="sub">OCR 定位 · 样式还原 · 原位替换</p>
-  </div>
+    <!-- ---------- 无痕改字视图 ---------- -->
+    <div class="view-embed on" id="viewEdit">
 
-  <div class="topbar-actions">
-    <label class="btn primary" for="fileInput">
-      <svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
-      选择图片
-    </label>
-    <input type="file" id="fileInput" accept="image/*" hidden>
 
-    <button class="btn" id="btnRevert" disabled title="丢弃所有修改，回到原图">
-      <svg viewBox="0 0 24 24" class="ic"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      还原
-    </button>
-
-    <button class="btn ghost" id="btnClose" hidden title="关闭当前图片，同时清掉本机保存的编辑状态">
-      <svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
-      关闭图片
-    </button>
-
-    <div class="split">
-      <button class="btn accent" id="btnExport" disabled>
-        <svg viewBox="0 0 24 24" class="ic"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19h16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        导出图片
-      </button>
-      <select id="selFormat" class="btn select" title="导出格式">
-        <option value="png">PNG</option>
-        <option value="jpg">JPG</option>
-        <option value="webp">WEBP</option>
-      </select>
+    <header class="topbar">
+    <div class="page-title">
+      <h1>无痕改字</h1>
+      <p class="sub">OCR 定位 · 样式还原 · 原位替换</p>
     </div>
-  </div>
+
+    <div class="topbar-actions">
+      <label class="btn primary" for="fileInput">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        选择图片
+      </label>
+      <input type="file" id="fileInput" accept="image/*" hidden>
+
+      <button class="btn" id="btnRevert" disabled title="丢弃所有修改，回到原图">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        还原
+      </button>
+
+      <button class="btn ghost" id="btnClose" hidden title="关闭当前图片，同时清掉本机保存的编辑状态">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        关闭图片
+      </button>
+
+      <div class="split">
+        <button class="btn accent" id="btnExport" disabled>
+          <svg viewBox="0 0 24 24" class="ic"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19h16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          导出图片
+        </button>
+        <select id="selFormat" class="btn select" title="导出格式">
+          <option value="png">PNG</option>
+          <option value="jpg">JPG</option>
+          <option value="webp">WEBP</option>
+        </select>
+      </div>
+    </div>
 </header>
 
 <div class="layout text-workspace">
 
-  <!-- ============ 画布区 ============ -->
-  <section class="stage" id="stage">
-    <div class="empty" id="emptyState">
-      <div class="empty-icon">🖼️</div>
-      <h2>拖入图片，或点击「选择图片」</h2>
-      <p>支持 PNG / JPG / WEBP / BMP · 自动识别文字位置与样式</p>
-      <div class="empty-hints">
-        <span>滚轮缩放</span><span>空格拖拽平移</span><span>点击文字框编辑</span>
+    <!-- ============ 画布区 ============ -->
+    <section class="stage" id="stage">
+      <div class="empty" id="emptyState">
+        <div class="empty-icon">🖼️</div>
+        <h2>拖入图片，或点击「选择图片」</h2>
+        <p>支持 PNG / JPG / WEBP / BMP · 自动识别文字位置与样式</p>
+        <div class="empty-hints">
+          <span>滚轮缩放</span><span>空格拖拽平移</span><span>点击文字框编辑</span>
+        </div>
       </div>
-    </div>
 
-    <div class="viewport" id="viewport" hidden>
-      <div class="scene" id="scene">
-        <canvas id="imgLayer"></canvas>
-        <canvas id="boxLayer"></canvas>
-        <div class="marquee" id="marquee" hidden></div>
+      <div class="viewport" id="viewport" hidden>
+        <div class="scene" id="scene">
+          <canvas id="imgLayer"></canvas>
+          <canvas id="boxLayer"></canvas>
+          <div class="marquee" id="marquee" hidden></div>
+        </div>
       </div>
-    </div>
 
-    <div class="loading" id="loading" hidden>
-      <div class="spinner"></div>
-      <p id="loadingText">正在识别文字…</p>
-    </div>
-
-    <div class="toolbar-float">
-      <button class="tbtn" id="btnZoomOut" title="缩小">−</button>
-      <span id="zoomLabel">100%</span>
-      <button class="tbtn" id="btnZoomIn" title="放大">+</button>
-      <button class="tbtn" id="btnZoomFit" title="适应窗口">⤢</button>
-      <span class="sep"></span>
-      <button class="tbtn toggle" id="btnShowBoxes" title="显示/隐藏识别框">▦</button>
-      <button class="tbtn toggle" id="btnCompare" title="按住查看原图">◑</button>
-    </div>
-  </section>
-
-  <!-- ============ 右侧属性面板 ============ -->
-  <aside class="inspector">
-
-    <div class="card status-card" id="statusCard">
-      <div class="status-row">
-        <span class="dot" id="statusDot"></span>
-        <span id="statusText">等待上传图片</span>
+      <div class="loading" id="loading" hidden>
+        <div class="spinner"></div>
+        <p id="loadingText">正在识别文字…</p>
       </div>
-      <div class="status-meta" id="statusMeta"></div>
-    </div>
 
-    <!-- 列表 -->
-    <div class="card grow">
-      <div class="card-head">
-        <h3>识别结果 <span class="badge" id="countBadge">0</span></h3>
-        <div class="head-actions">
-          <label class="mini-check" title="只显示已修改项">
-            <input type="checkbox" id="chkOnlyEdited"><span>仅改动</span>
+      <div class="toolbar-float">
+        <button class="tbtn" id="btnZoomOut" title="缩小">−</button>
+        <span id="zoomLabel">100%</span>
+        <button class="tbtn" id="btnZoomIn" title="放大">+</button>
+        <button class="tbtn" id="btnZoomFit" title="适应窗口">⤢</button>
+        <span class="sep"></span>
+        <button class="tbtn toggle" id="btnShowBoxes" title="显示/隐藏识别框">▦</button>
+        <button class="tbtn toggle" id="btnCompare" title="按住查看原图">◑</button>
+      </div>
+    </section>
+
+    <!-- ============ 右侧属性面板 ============ -->
+    <aside class="inspector">
+
+      <div class="card status-card" id="statusCard">
+        <div class="status-row">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">等待上传图片</span>
+        </div>
+        <div class="status-meta" id="statusMeta"></div>
+      </div>
+
+      <!-- 列表 -->
+      <div class="card grow">
+        <div class="card-head">
+          <h3>识别结果 <span class="badge" id="countBadge">0</span></h3>
+          <div class="head-actions">
+            <label class="mini-check" title="只显示已修改项">
+              <input type="checkbox" id="chkOnlyEdited"><span>仅改动</span>
+            </label>
+          </div>
+        </div>
+        <div class="search-row">
+          <input type="text" id="searchInput" class="input" placeholder="搜索文字内容…">
+        </div>
+        <div class="list" id="itemList">
+          <div class="list-empty">暂无识别结果</div>
+        </div>
+      </div>
+
+      <!-- 属性编辑 -->
+      <div class="card" id="editorCard" hidden>
+        <div class="card-head">
+          <h3>编辑文字 <span class="badge muted" id="editIndex"></span></h3>
+          <button class="mini-btn" id="btnResetItem" title="恢复该项原始内容与样式">重置</button>
+        </div>
+
+        <div class="field">
+          <label>文字内容</label>
+          <textarea id="inpText" class="input textarea" rows="2" placeholder="输入替换文字，留空则仅擦除"></textarea>
+          <div class="hint-row">
+            <span class="orig">原文：<b id="origText">—</b></span>
+            <span class="counter" id="charCount">0 字</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>字体 <span class="v" id="fontHint"></span></label>
+          <!-- 本机字体常有两三百个，原生 select 没法搜索，所以配一个过滤框 -->
+          <input type="search" id="fontFilter" class="input font-filter" placeholder="搜索字体名（可留空）" autocomplete="off" spellcheck="false">
+          <!-- size=8：固定高度可滚动列表。本机字体能有两三百个，原生下拉弹出会铺满整屏，
+               这里是内嵌列表 + 上面的搜索框，找字快也不挡画布 -->
+          <select id="selFont" class="input font-list" size="8"></select>
+          <div class="font-tools">
+            <label class="mini-btn" for="fontFileInput" title="从本地选择 .ttf / .otf / .ttc 导入 —— 只存在你自己的浏览器里，不会上传">导入字体</label>
+            <button class="mini-btn" id="btnFontReload" title="重新加载：托管字体 + 已导入字体 + 探测系统字体">重新扫描</button>
+            <button class="mini-btn" id="btnScanLocalFonts" title="读取本机已安装的字体清单（浏览器会请求授权，字体文件不会离开你的电脑）">本机字体</button>
+            <span class="font-count" id="userFontCount"></span>
+          </div>
+          <input type="file" id="fontFileInput" accept=".ttf,.otf,.ttc,.otc" multiple hidden>
+          <div class="hint">自动匹配 = 按原文字的字形比例与真实轮廓挑最接近的字体</div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>字号 <span class="v" id="vSize">自动</span></label>
+            <input type="range" id="rngSize" min="50" max="200" value="100" step="1">
+            <div class="hint">自动 = 按原文字墨迹高度反推</div>
+          </div>
+          <div class="field">
+            <label>颜色</label>
+            <div class="color-row">
+              <input type="color" id="inpColor" class="color">
+              <button class="mini-btn" id="btnPickColor" title="从原文字上吸取颜色">吸色</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>样式</label>
+          <div class="chips">
+            <button class="chip" id="chipBold"><b>B</b> 加粗</button>
+            <button class="chip" id="chipItalic"><i>I</i> 斜体</button>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>水平对齐</label>
+            <div class="segmented" id="segAlign">
+              <button data-v="left" class="on">左</button>
+              <button data-v="center">中</button>
+              <button data-v="right">右</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>垂直基准</label>
+            <div class="segmented" id="segVAlign">
+              <button data-v="bottom" class="on" title="文字底部（基线）对齐，最不容易看出被改过">底</button>
+              <button data-v="center" title="墨迹垂直居中">中</button>
+              <button data-v="top" title="文字顶部对齐">顶</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>擦除方式</label>
+          <select id="selErase" class="input">
+            <option value="auto">自动（按背景自适应）</option>
+            <option value="fill">纯色填充</option>
+            <option value="linear">渐变外推</option>
+            <option value="inpaint">内容修复 Telea</option>
+            <option value="ns">内容修复 NS</option>
+            <option value="blur">邻近模糊</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>位置微调 <span class="v" id="vOffset">0, 0</span></label>
+          <div class="nudge">
+            <button class="tbtn" data-dx="0" data-dy="-1">↑</button>
+            <div class="nudge-mid">
+              <button class="tbtn" data-dx="-1" data-dy="0">←</button>
+              <button class="tbtn" data-dx="0" data-dy="0" title="归零">•</button>
+              <button class="tbtn" data-dx="1" data-dy="0">→</button>
+            </div>
+            <button class="tbtn" data-dx="0" data-dy="1">↓</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="switch">
+            <input type="checkbox" id="chkAutoFamily" checked>
+            <span>自动匹配最接近的字体（推荐）</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="chkMatchStroke" checked>
+            <span>匹配原图笔画粗细（避免新字偏细，最影响"看不看得出来"）</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="chkAutoFit">
+            <span>过宽时缩字号以适应原位置（默认关：字变小比略超出更显眼）</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="chkMatchSharp" checked>
+            <span>匹配原图清晰度，避免文字过锐</span>
           </label>
         </div>
+
+        <div class="warn-box" id="warnBox" hidden></div>
       </div>
-      <div class="search-row">
-        <input type="text" id="searchInput" class="input" placeholder="搜索文字内容…">
+
+      <!-- 概览 -->
+      <div class="card" id="overviewCard" hidden>
+        <div class="card-head"><h3>批量操作</h3></div>
+        <div class="bulk">
+          <button class="btn sm" id="btnApplyAll">生成结果图</button>
+          <button class="btn sm ghost" id="btnClearAll">清空所有改动</button>
+        </div>
+        <div class="hint">导出时会自动应用全部改动，无需手动生成。</div>
       </div>
-      <div class="list" id="itemList">
-        <div class="list-empty">暂无识别结果</div>
-      </div>
+    </aside>
     </div>
-
-    <!-- 属性编辑 -->
-    <div class="card" id="editorCard" hidden>
-      <div class="card-head">
-        <h3>编辑文字 <span class="badge muted" id="editIndex"></span></h3>
-        <button class="mini-btn" id="btnResetItem" title="恢复该项原始内容与样式">重置</button>
-      </div>
-
-      <div class="field">
-        <label>文字内容</label>
-        <textarea id="inpText" class="input textarea" rows="2" placeholder="输入替换文字，留空则仅擦除"></textarea>
-        <div class="hint-row">
-          <span class="orig">原文：<b id="origText">—</b></span>
-          <span class="counter" id="charCount">0 字</span>
-        </div>
-      </div>
-
-      <div class="field">
-        <label>字体 <span class="v" id="fontHint"></span></label>
-        <select id="selFont" class="input"></select>
-        <div class="font-tools">
-          <label class="mini-btn" for="fontFileInput" title="从本地选择 .ttf / .otf / .ttc 导入">导入字体</label>
-          <button class="mini-btn" id="btnFontReload" title="重新扫描 fonts 目录">重新扫描</button>
-          <span class="font-count" id="userFontCount"></span>
-        </div>
-        <input type="file" id="fontFileInput" accept=".ttf,.otf,.ttc,.otc" multiple hidden>
-        <div class="hint">自动匹配 = 按原文字的字形比例与真实轮廓挑最接近的字体</div>
-      </div>
-
-      <div class="grid2">
-        <div class="field">
-          <label>字号 <span class="v" id="vSize">自动</span></label>
-          <input type="range" id="rngSize" min="50" max="200" value="100" step="1">
-          <div class="hint">自动 = 按原文字墨迹高度反推</div>
-        </div>
-        <div class="field">
-          <label>颜色</label>
-          <div class="color-row">
-            <input type="color" id="inpColor" class="color">
-            <button class="mini-btn" id="btnPickColor" title="从原文字上吸取颜色">吸色</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="field">
-        <label>样式</label>
-        <div class="chips">
-          <button class="chip" id="chipBold"><b>B</b> 加粗</button>
-          <button class="chip" id="chipItalic"><i>I</i> 斜体</button>
-        </div>
-      </div>
-
-      <div class="grid2">
-        <div class="field">
-          <label>水平对齐</label>
-          <div class="segmented" id="segAlign">
-            <button data-v="left" class="on">左</button>
-            <button data-v="center">中</button>
-            <button data-v="right">右</button>
-          </div>
-        </div>
-        <div class="field">
-          <label>垂直基准</label>
-          <div class="segmented" id="segVAlign">
-            <button data-v="bottom" class="on" title="文字底部（基线）对齐，最不容易看出被改过">底</button>
-            <button data-v="center" title="墨迹垂直居中">中</button>
-            <button data-v="top" title="文字顶部对齐">顶</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="field">
-        <label>擦除方式</label>
-        <select id="selErase" class="input">
-          <option value="auto">自动（按背景自适应）</option>
-          <option value="fill">纯色填充</option>
-          <option value="linear">渐变外推</option>
-          <option value="inpaint">内容修复 Telea</option>
-          <option value="ns">内容修复 NS</option>
-          <option value="blur">邻近模糊</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label>位置微调 <span class="v" id="vOffset">0, 0</span></label>
-        <div class="nudge">
-          <button class="tbtn" data-dx="0" data-dy="-1">↑</button>
-          <div class="nudge-mid">
-            <button class="tbtn" data-dx="-1" data-dy="0">←</button>
-            <button class="tbtn" data-dx="0" data-dy="0" title="归零">•</button>
-            <button class="tbtn" data-dx="1" data-dy="0">→</button>
-          </div>
-          <button class="tbtn" data-dx="0" data-dy="1">↓</button>
-        </div>
-      </div>
-
-      <div class="field">
-        <label class="switch">
-          <input type="checkbox" id="chkAutoFamily" checked>
-          <span>自动匹配最接近的字体（推荐）</span>
-        </label>
-        <label class="switch">
-          <input type="checkbox" id="chkMatchStroke" checked>
-          <span>匹配原图笔画粗细（避免新字偏细，最影响"看不看得出来"）</span>
-        </label>
-        <label class="switch">
-          <input type="checkbox" id="chkAutoFit">
-          <span>过宽时缩字号以适应原位置（默认关：字变小比略超出更显眼）</span>
-        </label>
-        <label class="switch">
-          <input type="checkbox" id="chkMatchSharp" checked>
-          <span>匹配原图清晰度，避免文字过锐</span>
-        </label>
-      </div>
-
-      <div class="warn-box" id="warnBox" hidden></div>
-    </div>
-
-    <!-- 概览 -->
-    <div class="card" id="overviewCard" hidden>
-      <div class="card-head"><h3>批量操作</h3></div>
-      <div class="bulk">
-        <button class="btn sm" id="btnApplyAll">生成结果图</button>
-        <button class="btn sm ghost" id="btnClearAll">清空所有改动</button>
-      </div>
-      <div class="hint">导出时会自动应用全部改动，无需手动生成。</div>
-    </div>
-  </aside>
-  </div>
 
   <footer class="statusbar">
     <span id="footLeft">就绪</span>
     <span id="footRight"></span>
   </footer>
 
-  </main>
+    </div>
+    <!-- ---------- 图像生成视图（原 image.html，已并入本页，切换不再跳转） ---------- -->
+      <div class="view-embed" id="viewImages" hidden>
+
+        <!-- ---------- 生成视图 ---------- -->
+        <section class="view" id="viewGenerate">
+          <div class="console">
+            <div class="console-scroll">
+
+              <div class="card">
+                <div class="card-head">
+                  <span>Images</span>
+                  <span class="cnt" id="refCount">0/4</span>
+                </div>
+                <div class="ref-note" id="refNote" hidden>
+                  <svg class="ic" viewBox="0 0 24 24"><use href="#i-spark"/></svg>
+                  <span id="refNoteText">—</span>
+                </div>
+                <label class="dropzone" id="dropzone">
+                  <input type="file" id="refInput" accept="image/png,image/jpeg,image/webp,image/bmp" multiple hidden>
+                  <div class="dz-inner">
+                    <svg class="dz-ic" viewBox="0 0 24 24"><use href="#i-upload"/></svg>
+                    <p>拖入或点击上传图片</p>
+                    <span>JPG、PNG、WebP · 单张不超过 8MB</span>
+                  </div>
+                </label>
+                <div class="ref-strip" id="refStrip" hidden></div>
+              </div>
+
+              <div class="field">
+                <div class="field-head">
+                  <span>Prompt</span>
+                  <span class="field-head-right">
+                    <span class="opt" id="promptCount"></span>
+                    <button class="mini-btn" id="btnClearPrompt" title="清空提示词" hidden>清空</button>
+                  </span>
+                </div>
+                <textarea id="prompt" rows="5" placeholder="描述你想要的画面…"></textarea>
+                <div class="chips" id="chips"></div>
+              </div>
+
+            </div>
+
+            <div class="console-foot">
+              <div class="pills">
+                <button class="pill" id="pillSize"><span id="pillSizeText">1024×1024</span><svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg></button>
+                <button class="pill" id="pillCount"><span id="pillCountText">1 张</span><svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg></button>
+              </div>
+              <button class="btn-generate" id="btnGenerate">
+                <span class="g-label">Generate</span>
+                <kbd id="genKey">⌘3</kbd>
+              </button>
+              <button class="btn-cancel" id="btnCancel" hidden>
+                <span class="spin"></span>取消
+              </button>
+            </div>
+          </div>
+
+          <div class="stage">
+            <header class="stage-head">
+              <h1 id="toolTitle">自由生成</h1>
+              <p id="toolDesc"></p>
+            </header>
+
+            <div class="stage-body">
+              <!-- 空态 -->
+              <div class="state" id="stateEmpty">
+                <div class="art">
+                  <svg viewBox="0 0 160 120" class="art-svg">
+                    <defs>
+                      <linearGradient id="ag" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#7ee04a"/><stop offset="1" stop-color="#3fbf8f"/>
+                      </linearGradient>
+                    </defs>
+                    <rect x="14" y="20" width="132" height="80" rx="14" fill="none" stroke="url(#ag)" stroke-width="2.5" opacity=".9"/>
+                    <circle cx="52" cy="48" r="8" fill="url(#ag)" opacity=".9"/>
+                    <path d="M24 88l30-30 22 22 16-14 30 26" fill="none" stroke="url(#ag)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <h3 id="emptyTitle">准备就绪</h3>
+                <p id="emptyDesc">写下提示词，然后点「Generate」</p>
+                <ul class="tips" id="emptyHints"></ul>
+              </div>
+
+              <!-- 加载态 -->
+              <div class="state" id="stateLoading" hidden>
+                <div class="gen-visual">
+                  <div class="ring"></div><div class="ring r2"></div><div class="ring r3"></div>
+                  <div class="core">✦</div>
+                </div>
+                <h3 id="loadingTitle">正在生成…</h3>
+                <p class="sub" id="loadingSub">模型正在作画，通常需要 30~60 秒</p>
+                <div class="elapsed"><b id="elapsed">0.0</b>s</div>
+                <div class="sk-grid" id="skGrid"></div>
+              </div>
+
+              <!-- 错误态 -->
+              <div class="state" id="stateError" hidden>
+                <div class="err-card">
+                  <div class="err-head">
+                    <span class="err-ic">!</span>
+                    <div><h3 id="errTitle">生成失败</h3><p id="errMsg">—</p></div>
+                  </div>
+                  <div class="err-hint" id="errHint" hidden></div>
+                  <details class="err-detail" id="errDetailWrap" hidden>
+                    <summary>查看原始返回</summary>
+                    <pre id="errDetail"></pre>
+                  </details>
+                  <div class="err-actions">
+                    <button class="btn" id="btnRetry">重试</button>
+                    <a class="btn ghost" href="/admin" target="_blank" rel="noopener">检查后台配置</a>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 结果 -->
+              <div class="result" id="result" hidden>
+                <div class="canvas" id="canvas">
+                  <img id="resultImg" alt="生成结果">
+                  <div class="canvas-nav" id="canvasNav" hidden></div>
+                </div>
+                <div class="result-bar">
+                  <div class="result-meta">
+                    <span class="tag accent" id="resTool">—</span>
+                    <span class="tag" id="resSize">—</span>
+                    <span class="tag" id="resModel">—</span>
+                    <span class="tag" id="resElapsed">—</span>
+                    <span class="tag accent" id="resRef" hidden>参照图</span>
+                    <span class="tag ok" id="resSaved" hidden>已存入作品库</span>
+                  </div>
+                  <div class="result-actions">
+                    <button class="btn sm" id="btnFav" title="收藏">
+                      <svg class="ic" viewBox="0 0 24 24"><use href="#i-star"/></svg><span>收藏</span>
+                    </button>
+                    <button class="btn sm" id="btnDownload">
+                      <svg class="ic" viewBox="0 0 24 24"><use href="#i-download"/></svg><span>下载</span>
+                    </button>
+                    <button class="btn sm ghost" id="btnOpenNew" title="新窗口打开">
+                      <svg class="ic" viewBox="0 0 24 24"><use href="#i-expand"/></svg>
+                    </button>
+                    <button class="btn sm ghost" id="btnAgain"><svg class="ic" viewBox="0 0 24 24"><use href="#i-refresh"/></svg><span>再来一张</span></button>
+                  </div>
+                </div>
+                <div class="result-foot">
+                  <div><label>你输入的提示词</label><p id="resPrompt">—</p></div>
+                  <div id="resSentWrap" hidden>
+                    <label>实际发送给模型的提示词（已自动加上该工具的指令）</label>
+                    <p id="resSent">—</p>
+                  </div>
+                  <div id="resRevisedWrap" hidden><label>模型改写后的提示词</label><p id="resRevised">—</p></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---------- 作品库视图 ---------- -->
+        <section class="view" id="viewProjects" hidden>
+          <div class="projects">
+            <header class="proj-head">
+              <div>
+                <h1>作品库</h1>
+                <p>所有生成与保存的图片都缓存于本机浏览器，服务器不保留任何副本</p>
+              </div>
+              <div class="proj-tools">
+                <div class="search">
+                  <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+                  <input type="search" id="projSearch" placeholder="搜索提示词…">
+                </div>
+                <button class="btn ghost" id="btnFavFilter">
+                  <svg class="ic" viewBox="0 0 24 24"><use href="#i-star"/></svg><span>只看收藏</span>
+                </button>
+                <a class="btn ghost" href="/image" id="btnBackCreate">
+                  <svg class="ic" viewBox="0 0 24 24"><use href="#i-spark"/></svg><span>去生成</span>
+                </a>
+                <button class="btn ghost danger" id="btnLbClearAll">
+                  <svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg>
+                </button>
+              </div>
+            </header>
+
+            <div class="proj-grid" id="projGrid"></div>
+
+            <div class="proj-empty" id="projEmpty" hidden>
+              <svg viewBox="0 0 24 24" class="empty-ic"><use href="#i-image"/></svg>
+              <h3 id="projEmptyTitle">作品库还是空的</h3>
+              <p id="projEmptyDesc">生成一张图片，它会自动出现在这里</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+</main>
 </div>
 
-<script src="/static/store.js?v=3.1"></script>
-<script src="/static/shell.js?v=3.1"></script>
-<script src="/static/workspace.js?v=3.1"></script>
-<script src="/static/app.js?v=3.1"></script>
+<script src="/static/store.js?v=3.4"></script>
+<script src="/static/shell.js?v=3.4"></script>
+<script src="/static/workspace.js?v=3.4"></script>
+<script src="/static/app.js?v=3.4"></script>
+<script src="/static/toolcache.js?v=3.4"></script>
+<script src="/static/image.js?v=3.4"></script>
+<!-- 浏览器本地引擎（模型缓存在浏览器，网页直接调用本地缓存推理）。
+     module 默认延迟执行，会排在上面几个普通脚本之后。 -->
+<script type="module" src="/static/engine/boot.js?v=3.4"></script>
+
+<!-- ======================= 生成视图的浮层（弹层 / 灯箱 / toast） ======================= -->
+<div class="pop-wrap" id="popWrap" hidden></div>
+<div class="lightbox" id="lightbox" hidden>
+  <button class="lb-close" id="lbClose"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+  <img id="lbImg" alt="预览">
+  <div class="lb-info">
+    <p id="lbPrompt">—</p>
+    <div class="lb-meta" id="lbMeta"></div>
+    <div class="lb-actions">
+      <button class="btn sm" id="lbFav"><svg class="ic" viewBox="0 0 24 24"><use href="#i-star"/></svg><span id="lbFavText">收藏</span></button>
+      <button class="btn sm" id="lbDown"><svg class="ic" viewBox="0 0 24 24"><use href="#i-download"/></svg><span>下载</span></button>
+      <button class="btn sm ghost danger" id="lbDel"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg><span>删除</span></button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
 </body>
 </html>

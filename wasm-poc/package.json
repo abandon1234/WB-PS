@@ -1,0 +1,16 @@
+{
+  "name": "wb-ps-wasm-poc",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "浏览器端 OCR 可行性验证：onnxruntime-web + opencv.js，与 Python 端逐项比对",
+  "scripts": {
+    "vendor": "node scripts/vendor.mjs",
+    "serve": "node scripts/serve.mjs",
+    "baseline": "../../.workbuddy/binaries/python/envs/default/Scripts/python.exe scripts/gen-baseline.py"
+  },
+  "dependencies": {
+    "@techstark/opencv-js": "^5.0.0-release.1",
+    "onnxruntime-web": "^1.30.0"
+  }
+}

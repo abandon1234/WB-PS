@@ -1,0 +1,12 @@
+{
+  "_comment": "Python 侧生成的基准值：hashlib.pbkdf2_hmac / hmac.new。用于验证 Workers 的 WebCrypto 实现是否字节级对齐。",
+  "pw": "abc123456",
+  "salt": "00112233445566778899aabbccddeeff",
+  "hash": "4339282115efd4cab4bd93add98cc3e864bc7d903e728b8b504f81b610f5001a",
+  "hash_rounds": 120000,
+  "hash_100k": "1d8e7ef818541471da1356fc3b02068a2a27c4d60dec007a9e3d6fb3d63e1d48",
+  "_hash_note": "hash 是 12 万轮（Python 版历史值，Workers 算不了，仅作算法一致性留档）；hash_100k 是 10 万轮，即当前默认值，登录校验走这条。",
+  "secret": "d1e2f3a4b5c60718293a4b5c6d7e8f90",
+  "payload": "1800000000",
+  "token_sig": "ewWW3ugGZf-AcF8mV0VqyRi2oDqCBfhbwJdgb5PSu-s"
+}

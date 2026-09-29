@@ -363,6 +363,18 @@ app.include_router(image_routes.router)
 if os.path.isdir(WEB_DIR):
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
+# 模型与运行时（onnx / wasm / opencv.js / 字体）：走 /assets 前缀。
+# 这个前缀正是 Service Worker 接管的范围 —— 模型缓存进浏览器就靠它。
+ASSETS_DIR = os.path.join(WEB_DIR, "assets")
+if os.path.isdir(ASSETS_DIR):
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+
+
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    """Service Worker 必须在根作用域提供，否则接管不了 /assets/ 下的请求。"""
+    return FileResponse(os.path.join(WEB_DIR, "sw.js"), media_type="text/javascript")
+
 
 # ------------------------------------------------------------------ 入口
 

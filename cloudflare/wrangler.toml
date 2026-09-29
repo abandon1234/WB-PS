@@ -1,0 +1,67 @@
+# WB-PS · Cloudflare Workers 部署配置
+#
+# 部署前先做两件事（README.md 有逐步命令）：
+#   1. wrangler kv namespace create WB_PS_KV  → 把返回的 id 填进下面 [[kv_namespaces]] 的 id
+#   2. 把 FRONTEND_ORIGIN 改成你自己的域名
+#
+# 无痕改字**不经过 Worker**：模型与运行时（约 40MB）作为 /assets/ 下的静态资源
+# 下发，由浏览器 Service Worker 缓存，网页直接调用本地缓存推理。
+# 因此这里只需要 KV（后台配置）与静态资源，不再需要任何"重后端"配置。
+
+name = "wb-ps"
+main = "src/index.js"
+compatibility_date = "2026-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+# 静态前端：web/ 同步到 public/（页面脚本在 public/static/，模型在 public/assets/）
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# 让 Worker 先接到请求。
+#
+# 不配这个的话，Cloudflare 的静态资源层会先处理请求：能匹配到文件就直接返回，
+# 匹配不到才交给 Worker。实测 `/` 会被当成目录请求 **307 到 /static/**，
+# 于是 index.js 里的 PAGE_MAP（/ → /static/index.html）根本没机会执行，
+# 首页直接打不开。配上之后分流顺序才和本地 review 的一致。
+run_worker_first = true
+
+# 关掉 Cloudflare 的 HTML 路径规范化。
+#
+# 默认行为（auto-trailing-slash）会把带 .html 的请求 **307 改成目录形式**：
+# 实测 /static/index.html 被跳到 /static/，于是 index.js 的 PAGE_MAP
+# （/ → /static/index.html）永远拿不到内容，首页成了一次多余跳转。
+# 关掉之后「要哪个文件就给哪个文件」，路径语义和本地一致。
+html_handling = "none"
+
+# 自定义域名。
+#
+# 为什么必须有：`*.workers.dev` 在国内被 DNS 污染 + 连接超时，实测直接打不开
+# （net::ERR_CONNECTION_TIMED_OUT），自持域名走 Cloudflare 才通。
+# 写进配置而不是只在 Dashboard 点一下，是为了防止后续 `wrangler deploy`
+# 因为配置里没有这条而把绑定覆盖掉。
+routes = [
+  { pattern = "ps.ysw69.dpdns.org", custom_domain = true }
+]
+
+[[kv_namespaces]]
+binding = "KV"
+id = "f7b8db002c3d4f8e978e6e2b5efe3d80"
+
+[vars]
+# 允许访问的来源。已设为本次部署的实际域名。
+FRONTEND_ORIGIN = "https://ps.ysw69.dpdns.org"
+
+# 中转站调用超时上限（秒）—— 一次性（非流式）请求。
+#
+# 这个值**不能随便往上加**：Cloudflare 边缘对"没有数据流动"超过约 100s 的响应
+# 会断开，表现为 524。所以取 90s —— 贴近上限但不越界。
+# 之前是 60s，慢一点的中转站会被误判成超时（实测一次 1024×1024 要 57.7s）。
+MAX_UPSTREAM_TIMEOUT = 90
+
+# 流式请求的超时上限（秒）。
+#
+# 前端默认走流式（NDJSON）：服务端每 5 秒吐一行心跳，连接保持活跃，
+# 边缘就不会判超时 —— 实测 151 秒的流能完整送达。
+# 因此这里可以放宽到分钟级，慢的中转站也能等完。
+MAX_STREAM_TIMEOUT = 300

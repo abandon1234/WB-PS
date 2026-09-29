@@ -1,0 +1,20 @@
+{
+  "name": "wb-ps-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WB-PS 图片工作台 · Cloudflare Workers 版",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "sync:assets": "node scripts/sync-assets.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "test": "node tests/compat.test.mjs && node tests/e2e.test.mjs",
+    "build": "npm run sync:assets && wrangler deploy --dry-run --outdir dist",
+    "kv:list": "wrangler kv namespace list",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.140.0"
+  }
+}

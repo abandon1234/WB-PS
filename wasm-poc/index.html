@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>浏览器端 OCR 可行性验证 · WB-PS</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --border: #e2e1dd;
+    --text: #22221f; --muted: #6b6a64; --accent: #185fa5;
+    --ok: #2f7d32; --warn: #a86a00; --bad: #b3261e;
+    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px; background: var(--bg); color: var(--text);
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  h1 { font-size: 17px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .bar {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 14px; display: flex; gap: 12px;
+    align-items: center; flex-wrap: wrap;
+  }
+  button {
+    font: inherit; padding: 7px 14px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  select { font: inherit; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--border); background: #fff; }
+  #status { color: var(--muted); font-size: 13px; margin-left: auto; }
+  .cols { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.2fr); gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .card h2 { font-size: 13px; font-weight: 500; margin: 0 0 10px; color: var(--muted); }
+  canvas { max-width: 100%; height: auto; display: block; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; border: 1px solid; }
+  .pill.ok { border-color: #a5c9a8; background: #eaf6ea; color: var(--ok); }
+  .pill.bad { border-color: #e6b3b0; background: #fbeceb; color: var(--bad); }
+  .summary { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
+  .summary b { font-family: var(--mono); font-weight: 500; }
+  .err { color: var(--bad); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>浏览器端 OCR 可行性验证</h1>
+<div class="sub">
+  onnxruntime-web + opencv.js，与 Python 端 RapidOCR 逐框比对。模型与字典均取自本机
+  <span style="font-family:var(--mono)">rapidocr_onnxruntime</span>，同源同版本。
+</div>
+
+<div class="bar">
+  <button id="run" disabled>开始识别</button>
+  <select id="imgSel">
+    <option value="/samples/test_card.png">samples/test_card.png</option>
+  </select>
+  <label style="font-size:13px;color:var(--muted)">
+    <input type="checkbox" id="autoRun"> 页面加载后自动跑
+  </label>
+  <span id="status">正在加载运行时…</span>
+</div>
+
+<div class="cols">
+  <div class="card">
+    <h2>识别结果（框已叠加）</h2>
+    <canvas id="preview"></canvas>
+    <div class="hint" id="timing"></div>
+  </div>
+  <div class="card">
+    <h2>与 Python 基线比对</h2>
+    <div class="summary" id="summary"></div>
+    <div id="report"><span class="hint">等待识别…</span></div>
+  </div>
+</div>
+
+<script src="vendor/opencv.js"></script>
+<script src="vendor/ort.wasm.min.js"></script>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

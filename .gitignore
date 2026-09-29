@@ -21,3 +21,10 @@ data/
 
 # 写提交信息用的临时文件（避免被 git add -A 收进来）
 .commitmsg.tmp
+
+# 依赖目录（各子项目各自的 .gitignore 之外，这里兜一层）
+node_modules/
+
+# WorkBuddy 工作区数据：只留会话记录，其余（临时备份等）不入库
+.workbuddy/*
+!.workbuddy/memory/

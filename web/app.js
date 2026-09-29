@@ -6,18 +6,191 @@
 'use strict';
 
 const $  = (id) => document.getElementById(id);
+
+/* ---------------------------------------------------------------- 视图路由 */
+/**
+ * 本页现在是"无痕改字 + 图像生成"的双视图单页：
+ *   #edit（默认）→ 改字视图      其余 hash（#create/#combine/#projects…）→ 生成视图
+ *
+ * 以前是 / → /image 两次独立加载，每次切回改字都要重新初始化本地引擎（实测 5.77s）。
+ * 合并到一页后，引擎只初始化一次，切换只换显隐，实测接近瞬时。
+ */
+
+/** 生成视图的 hash 集合（与 image.js 的 TOOLS id 对应） */
+const IMAGE_KEYS = new Set(['create', 'combine', 'portrait', 'product', 'projects']);
+
+function currentViewKey() {
+  const h = location.hash.replace(/^#/, '');
+  if (h && IMAGE_KEYS.has(h)) return h;
+  return 'edit';
+}
+
+/**
+ * 生成视图请求切到某个工具时的回调（由 image.js 在嵌入模式下调用）。
+ *
+ * 为什么需要它：从「空 hash 的首页」点侧边栏「自由生成」时，
+ * 目标地址 /#create 与当前 / 相比只有 hash 变化，而 hashchange 在
+ * 「空 hash → 有 hash」这一步上并不总会派发（实测某些时序下收不到），
+ * 结果点了没反应。所以让 image.js 直接喊一声，外层立刻切视图，
+ * 不依赖 hashchange 事件。
+ */
+window.WBShowImages = function (key) {
+  imagesReady = true;
+  const boxImages = $('viewImages');
+  const boxEdit = $('viewEdit');
+  if (!boxImages || !boxEdit) return;
+  boxImages.hidden = false;
+  boxImages.classList.add('on');
+  boxEdit.hidden = true;
+  boxEdit.classList.remove('on');
+  document.body.classList.add('mode-images');
+  // 把 hash 补上（这样刷新/分享能回到同一视图），但不再回喊 image.js，避免绕圈
+  const want = '#' + (key || 'create');
+  if (location.hash !== want) history.replaceState(null, '', want);
+  if (window.WBShell) WBShell.syncActive();
+};
+
+/** 外层只负责显示哪个视图；生成视图内部显示什么由 image.js 按自己的状态决定 */
+function applyViewRoute() {
+  const key = currentViewKey();
+  const toImages = key !== 'edit';
+  const boxImages = $('viewImages');
+  const boxEdit = $('viewEdit');
+  if (!boxImages || !boxEdit) return;
+
+  // 生成视图就绪前不切过去 —— 否则会闪一个空壳
+  if (toImages && !imagesReady) {
+    window.__pendingView = key;
+    return;
+  }
+
+  boxImages.hidden = !toImages;
+  boxImages.classList.toggle('on', toImages);
+  boxEdit.hidden = toImages;
+  boxEdit.classList.toggle('on', !toImages);
+  document.body.classList.toggle('mode-images', toImages);
+
+  if (toImages && window.WBImage && window.WBImage.showKey) {
+    window.WBImage.showKey(key);
+  }
+  if (window.WBShell) WBShell.syncActive();
+}
+
+let imagesReady = false;
+window.addEventListener('hashchange', applyViewRoute);
+window.addEventListener('wb-images-ready', () => {
+  imagesReady = true;
+  const want = window.__pendingView;
+  window.__pendingView = null;
+  applyViewRoute();
+  if (want && window.WBImage && window.WBImage.showKey) window.WBImage.showKey(want);
+});
+
+/* 浏览器本地引擎优先：改字全流程（识别→样式→擦除→重绘）都在本地跑，
+   模型与算力都来自浏览器缓存，服务端不再参与。
+   本地不可用（引擎起不来、或该接口本地没实现）时，自动回落到服务端接口 —— 
+   两种部署形态（纯静态 / 带 Python 后端）共用同一份前端。 */
+
+/**
+ * 把本地引擎的进度接到状态栏。
+ *
+ * 没有这个，首次进页面会先静默下载 39MB 模型（几十秒到几分钟），
+ * 状态栏一直停在"等待上传图片" —— 用户只会以为页面卡死了。
+ */
+const wireLocalProgress = (L) => {
+  if (!L || L._progressWired) return L;
+  L._progressWired = true;
+  L.progress = (p) => {
+    if (!p || !p.label) return;
+    const pct = p.phase === 'download' && p.total
+      ? ` ${Math.round((p.done / p.total) * 100)}%` : '';
+    const once = p.phase === 'download' ? '（仅首次，之后从本机缓存读取）' : '';
+    status(`本地引擎：${p.label}${pct}`, 'busy', once);
+  };
+  return L;
+};
+
+/**
+ * 取本地引擎门面。
+ *
+ * ⚠️ 这里必须等一会儿：boot.js 是 <script type="module">（延迟执行），
+ * 而本文件是普通脚本，会**先于**它执行。不等的话 window.WBLocal 还是 undefined，
+ * 于是所有接口都被判成"本地不处理"，一股脑发到服务端 —— 在只有静态托管的
+ * Cloudflare 版上就是一堆 404（表现为"无法连接后端服务 · HTTP 404"）。
+ */
+const localFacade = async (timeout = 20000) => {
+  if (!window.WBLocal) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      await new Promise((r) => setTimeout(r, 50));
+      if (window.WBLocal) break;
+    }
+  }
+  return wireLocalProgress(window.WBLocal);
+};
+
 const api = async (url, body, isForm = false) => {
+  const L = await localFacade();
+  if (L) {
+    try {
+      const local = await L.handle(url, body);
+      if (local !== undefined) return local;
+    } catch (err) {
+      if (L.ready) throw err;                 // 引擎已就绪仍失败 → 真错误，别掩盖
+      console.warn('[WB-PS] 本地引擎不可用，回退到服务端：', err);
+    }
+  }
+
   const opt = { method: 'POST' };
   if (isForm) opt.body = body;
   else { opt.headers = { 'Content-Type': 'application/json' }; opt.body = JSON.stringify(body); }
   const r = await fetch(url, opt);
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
-    try { const j = await r.json(); msg = j.detail || j.message || msg; } catch (_) {}
+    try {
+      const j = await r.json();
+      // detail 可能是字符串（无痕改字）也可能是对象 {message,hint}（图像生成），
+      // 一律取出可读文案，避免把对象塞进 Error 里显示成 [object Object]
+      let d = j.detail || j.message;
+      if (d && typeof d === 'object') d = d.message || d.hint || '';
+      msg = d || msg;
+    } catch (_) {}
     throw new Error(msg);
   }
-  return r.json();
+  return readJson(r);
 };
+
+/* GET 版，同样本地引擎优先。
+   早先这里几处直接写了裸 fetch，结果 CF 版（没有 Python 后端）一进页面就报
+   「无法连接后端服务」—— 请求打到 Worker 上没有对应路由，拿回一个空体，
+   r.json() 抛 "Unexpected end of JSON input"。现在统一走这条路径，
+   并且把空体/非 JSON 变成人能看懂的话。 */
+const apiGet = async (url) => {
+  const L = await localFacade();
+  if (L) {
+    try {
+      const local = await L.handle(url, null);
+      if (local !== undefined) return local;
+    } catch (err) {
+      if (L.ready) throw err;
+      console.warn('[WB-PS] 本地引擎不可用，回退到服务端：', err);
+    }
+  }
+  const r = await fetch(url, { credentials: 'same-origin' });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return readJson(r);
+};
+
+/** 空体/非 JSON 都要说人话，而不是把解析器的报错直接甩给用户 */
+async function readJson(r) {
+  const txt = await r.text();
+  if (!txt) throw new Error('服务端返回了空响应');
+  try {
+    return JSON.parse(txt);
+  } catch (_) {
+    throw new Error(`服务端返回的不是 JSON：${txt.slice(0, 120)}`);
+  }
+}
 
 /* ---------------------------------------------------------------- 状态 */
 const S = {
@@ -283,18 +456,9 @@ function loadEditor(it) {
   $('chkMatchStroke').checked = e.match_stroke !== false;
   $('fontHint').textContent = '';
 
-  // 字体下拉：首项为「自动匹配」，选中它会交给后端按字形挑字体
-  const cur = e.family || '';
-  const sel = $('selFont');
-  const sig = `${S.fonts.length}|${cur}`;
-  if (sel.dataset.sig !== sig) {
-    sel.innerHTML = '<option value="">自动匹配（推荐）</option>' +
-      S.fonts.map(f => `<option value="${esc(f.name)}"${f.name === cur ? ' selected' : ''}>`
-        + `${f.user ? '★ ' : ''}${esc(f.name)}</option>`).join('');
-    sel.dataset.sig = sig;
-  } else {
-    sel.value = cur;
-  }
+  // 字体下拉：首项为「自动匹配」，选中它会交给本地引擎按字形挑字体。
+  // 清单可能有几百项（扫过本机字体之后），所以按来源分组 + 支持搜索。
+  rebuildFontSelect();
 
   const w = $('warnBox');
   const warns = (e._warnings || []);
@@ -423,8 +587,7 @@ async function persistImage(file) {
 
 async function sessionAlive(sid) {
   try {
-    const r = await fetch(`/api/session/${encodeURIComponent(sid)}`);
-    return r.ok ? await r.json() : null;
+    return await apiGet(`/api/session/${encodeURIComponent(sid)}`);
   } catch (_) { return null; }
 }
 
@@ -713,12 +876,24 @@ async function exportImage() {
       const { _warnings, ...rest } = S.edits[k];
       edits[k] = rest;
     });
-    const r = await fetch('/api/export', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: S.sessionId, edits, new_items: [], format: fmt, quality: 95 }),
-    });
-    if (!r.ok) throw new Error('导出失败 HTTP ' + r.status);
-    const blob = await r.blob();
+    const payload = { session_id: S.sessionId, edits, new_items: [], format: fmt, quality: 95 };
+
+    // 本地引擎优先：CF 版没有 /api/export，裸 fetch 必然 404。
+    // 本地导出走 canvas.toBlob，格式/质量与原服务端一致。
+    const L = await localFacade();
+    let blob = null;
+    if (L && L.exportBlob) {
+      const r = await L.exportBlob(payload);
+      blob = r.blob;
+    } else {
+      const r = await fetch('/api/export', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error('导出失败 HTTP ' + r.status);
+      blob = await r.blob();
+    }
+
     const stem = (S.file?.name || 'image').replace(/\.[^.]+$/, '');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -848,7 +1023,16 @@ $('inpText').addEventListener('input', (e) => {
   }
 });
 
-$('selFont').addEventListener('change', (e) => setEdit(S.sel, { family: e.target.value }));
+$('selFont').addEventListener('change', (e) => {
+  const fam = e.target.value;
+  // 手动选定字体 = 关掉「自动匹配」；选回第一项则恢复自动。
+  // 不联动的话，勾选框还显示"自动匹配"，与实际渲染用的字体对不上。
+  setEdit(S.sel, { family: fam, auto_family: !fam });
+});
+
+/* 字体搜索框：边打边筛，重建下拉即可（不会丢输入焦点）。
+   本机字体常有 200+ 项，靠原生 select 找字太难了。 */
+$('fontFilter')?.addEventListener('input', debounce(rebuildFontSelect, 120));
 $('inpColor').addEventListener('input', (e) => setEdit(S.sel, { fg_color: hex2rgb(e.target.value) }));
 $('rngSize').addEventListener('input', (e) => {
   const v = +e.target.value;
@@ -876,7 +1060,11 @@ $('chipItalic').addEventListener('click', (e) => {
 $('selErase').addEventListener('change', (e) => setEdit(S.sel, { erase_method: e.target.value }));
 $('chkAutoFit').addEventListener('change', (e) => setEdit(S.sel, { auto_fit: e.target.checked }));
 $('chkMatchSharp').addEventListener('change', (e) => setEdit(S.sel, { match_sharpness: e.target.checked }));
-$('chkAutoFamily').addEventListener('change', (e) => setEdit(S.sel, { auto_family: e.target.checked }));
+$('chkAutoFamily').addEventListener('change', (e) => {
+  const on = e.target.checked;
+  // 重新勾上「自动匹配」时把手动指定的字体清掉，下拉也跟着回到第一项
+  setEdit(S.sel, on ? { auto_family: true, family: '' } : { auto_family: false });
+});
 $('chkMatchStroke').addEventListener('change', (e) => setEdit(S.sel, { match_stroke: e.target.checked }));
 $('btnPickColor').addEventListener('click', enterPickMode);
 
@@ -894,11 +1082,70 @@ document.querySelectorAll('.nudge .tbtn').forEach(b => b.addEventListener('click
 
 /* ---------------------------------------------------------------- 字体管理 */
 function applyFontList(families, userCount) {
-  S.fonts = families || [];
+  // families 是 [{name,bold,user,files}] —— 与 Python 版 /api/fonts 同形。
+  // 兼容一下早期只给字符串数组的实现，避免旧缓存里存的数据把下拉搞空。
+  S.fonts = (families || []).map(f => (typeof f === 'string' ? { name: f, user: false } : f))
+    .filter(f => f && f.name);
   $('selFont').dataset.sig = '';                 // 强制重建下拉
   const it = S.items.find(i => i.id === S.sel);
   if (it) loadEditor(it);
   $('userFontCount').textContent = userCount ? `★ 已导入 ${userCount} 个` : '';
+}
+
+/** 当前编辑项选定的字体（'' = 自动匹配） */
+function currentFontChoice() {
+  const e = S.sel !== null ? S.edits[S.sel] : null;
+  return (e && e.family) || '';
+}
+
+/**
+ * 重建字体下拉。
+ *
+ * 扫过本机字体后清单可能有两三百项，原生 select 又不能搜索 ——
+ * 直接铺开就是一屏空白（踩过：选项标签渲染成空串）且没法找。
+ * 所以这里：① 按来源分组 ② 受 #fontFilter 关键词过滤 ③ 永远保留「自动匹配」。
+ */
+function rebuildFontSelect() {
+  const sel = $('selFont');
+  if (!sel) return;
+  const cur = currentFontChoice();
+  const box = $('fontFilter');
+  const q = (box && box.value || '').trim();
+  const norm = (s) => String(s).toLowerCase().replace(/[\s\-_]+/g, '');
+
+  const list = (S.fonts || []).filter(f => !q || norm(f.name).includes(norm(q)));
+
+  const GENERIC = ['sans-serif', 'serif', 'monospace'];
+  const isCjk = (n) => /yahei|simsun|simhei|kai|fang|pingfang|heiti|songti|jhenghei|cjk|source han|wenquanyi|hiragino|sthei|微软|雅黑|宋|黑体|楷|仿宋/i.test(n);
+  const groups = [
+    ['★ 已导入', list.filter(f => f.user)],
+    ['中文字体', list.filter(f => !f.user && isCjk(f.name))],
+    ['其他字体', list.filter(f => !f.user && !isCjk(f.name) && !GENERIC.includes(f.name))],
+    ['通用', list.filter(f => GENERIC.includes(f.name))],
+  ];
+
+  const parts = ['<option value="">自动匹配（推荐）</option>'];
+  for (const [label, arr] of groups) {
+    if (!arr.length) continue;
+    parts.push(`<optgroup label="${esc(label)} · ${arr.length}">`);
+    for (const f of arr) {
+      parts.push(`<option value="${esc(f.name)}"${f.name === cur ? ' selected' : ''}>`
+        + `${f.user ? '★ ' : ''}${esc(f.name)}${f.bold ? ' Bold' : ''}</option>`);
+    }
+    parts.push('</optgroup>');
+  }
+  if (q && !list.length) {
+    parts.push(`<option value="" disabled>没有匹配「${esc(q)}」的字体</option>`);
+  }
+  // 选中的字体不在清单里（清单刚被重扫过）也要能显示，否则会静默回到"自动匹配"
+  if (cur && !list.some(f => f.name === cur)) {
+    parts.push(`<optgroup label="当前选择">`
+      + `<option value="${esc(cur)}" selected>${esc(cur)}</option></optgroup>`);
+  }
+
+  sel.innerHTML = parts.join('');
+  sel.dataset.sig = `${(S.fonts || []).length}|${cur}|${q}`;
+  if (cur) sel.value = cur;
 }
 
 async function importFonts(files) {
@@ -939,6 +1186,31 @@ $('btnFontReload').addEventListener('click', async () => {
     foot(`已重新扫描，共 ${S.fonts.length} 个字体族可用`);
   } catch (err) {
     foot('扫描失败：' + err.message);
+  } finally { busy(false); }
+});
+
+/* 扫描本机字体：走浏览器的 Local Font Access API，字体文件不上传。
+   首次会弹授权框；拒绝或浏览器不支持时给出可读的说明，而不是静默失败。 */
+$('btnScanLocalFonts')?.addEventListener('click', async () => {
+  busy(true, '正在读取本机字体…');
+  try {
+    const res = await api('/api/fonts/scan', {});
+    applyFontList(res.families, res.user_count);
+    const sc = res.scan || {};
+    if (sc.supported === false) {
+      status('无法读取本机字体', 'err', esc(sc.error || '当前浏览器不支持'));
+      foot('当前浏览器不支持读取本机字体（Chrome / Edge 104+ 可用）');
+    } else if (sc.denied) {
+      status('读取本机字体的授权被拒绝', 'err', '可在地址栏左侧的站点设置里重新允许');
+      foot('未获得授权，本机字体未加入清单');
+    } else {
+      status('本机字体已加入清单', 'ok',
+        `本机 ${sc.count} 个字体族 · 合计可用 ${S.fonts.length} 个`);
+      foot(`读到本机 ${sc.count} 个字体族，合计 ${S.fonts.length} 个可用；字体文件始终留在本机`);
+    }
+  } catch (err) {
+    status('读取本机字体失败', 'err', esc(err.message));
+    foot('读取本机字体失败：' + err.message);
   } finally { busy(false); }
 });
 
@@ -1035,21 +1307,41 @@ window.addEventListener('resize', () => { if (S.W) applyView(); });
     if (document.visibilityState === 'hidden') persistNow();
   });
 
-  try {
-    const h = await fetch('/api/health').then(r => r.json());
-    S.backend = h.ocr_backend;
-    if (h.ocr_error || h.ocr_backend === 'unavailable') {
-      status('OCR 引擎未就绪', 'err', esc(h.ocr_error || ''));
-    } else {
-      status('服务就绪', 'ok', `OCR ${esc(h.ocr_backend)} · 可用字体 ${h.font_count} 种`);
+  /* 探测后端并铺字体清单。
+     抽成函数是因为它可能要跑两次：boot.js 是延迟加载的模块，慢网络下可能比
+     本脚本晚好几秒才执行；那一轮会落到网络请求上（纯静态部署就是 404）。
+     等本地引擎真正就绪时再补一次，界面自然就正确了。 */
+  let probed = false;
+  const probeBackend = async () => {
+    if (probed) return;
+    try {
+      const h = await apiGet('/api/health');
+      S.backend = h.ocr_backend;
+      if (h.ocr_error || h.ocr_backend === 'unavailable') {
+        status('OCR 引擎未就绪', 'err', esc(h.ocr_error || ''));
+      } else {
+        status('服务就绪', 'ok', `OCR ${esc(h.ocr_backend)} · 可用字体 ${h.font_count}`);
+      }
+      const f = await apiGet('/api/fonts');
+      applyFontList(f.families, f.user_count);
+      probed = true;
+      foot('就绪 · 拖入图片开始');
+    } catch (err) {
+      // 本地引擎还在下载/装配时不要报「无法连接后端服务」——那是误导。
+      // 这时候进度由 progress 回调写在状态栏上，这里只兜一句说明。
+      const L = window.WBLocal;
+      if (L && !L.ready && !L.error) {
+        status('本地引擎准备中…', 'busy', '首次使用需下载模型，之后从本机缓存读取');
+      } else {
+        status('无法连接后端服务', 'err', esc(err.message));
+      }
     }
-    const f = await fetch('/api/fonts').then(r => r.json());
-    S.fonts = f.families || [];
-    applyFontList(f.families, f.user_count);
-    foot('就绪 · 拖入图片开始');
-  } catch (err) {
-    status('无法连接后端服务', 'err', esc(err.message));
-  }
+  };
+  await probeBackend();
+
+  // 本地引擎晚到时补一次（含"事件已经派发过"的情况）
+  window.addEventListener('wb-local-ready', () => { probeBackend(); });
+  if (window.WBLocal && window.WBLocal.ready) probeBackend();
 
   // 有上次的工作区就自动接上（放在最后，避免被上面的状态文案覆盖）
   try {
@@ -1058,6 +1350,10 @@ window.addEventListener('resize', () => { if (S.W) applyView(); });
   } catch (err) {
     console.error('恢复工作区异常', err);
   }
+
+  // 视图路由放最后：上面的初始化都可能改写界面，路由决定最终显示哪一个视图。
+  // 用 ?v=#create 这类深链进来时也能直接落到生成视图。
+  applyViewRoute();
 })();
 
 })();

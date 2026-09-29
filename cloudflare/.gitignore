@@ -1,0 +1,8 @@
+node_modules/
+dist/
+public/static/
+public/assets/
+kv-bulk.json
+.dev.vars
+.wrangler/
+*.log

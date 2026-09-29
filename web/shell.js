@@ -38,12 +38,12 @@ window.WBShell = (function () {
 
   /* 侧栏导航：一处定义，两个页面共用 */
   const NAV = [
-    { key: 'edit', label: '无痕改字', href: '/', icon: '#i-type', sec: '图片工具' },
-    { key: 'create', label: '自由生成', href: '/image#create', icon: '#i-spark', sec: '图片工具' },
-    { key: 'combine', label: '图像融合', href: '/image#combine', icon: '#i-layers', sec: '图片工具' },
-    { key: 'portrait', label: '人物写真', href: '/image#portrait', icon: '#i-person', sec: '图片工具' },
-    { key: 'product', label: '商品图生成', href: '/image#product', icon: '#i-box', sec: '图片工具' },
-    { key: 'projects', label: '作品库', href: '/image#projects', icon: '#i-folder', sec: '资源', badge: true },
+    { key: 'edit', label: '无痕改字', href: '/#edit', icon: '#i-type', sec: '图片工具' },
+    { key: 'create', label: '自由生成', href: '/#create', icon: '#i-spark', sec: '图片工具' },
+    { key: 'combine', label: '图像融合', href: '/#combine', icon: '#i-layers', sec: '图片工具' },
+    { key: 'portrait', label: '人物写真', href: '/#portrait', icon: '#i-person', sec: '图片工具' },
+    { key: 'product', label: '商品图生成', href: '/#product', icon: '#i-box', sec: '图片工具' },
+    { key: 'projects', label: '作品库', href: '/#projects', icon: '#i-folder', sec: '资源', badge: true },
   ];
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -51,10 +51,11 @@ window.WBShell = (function () {
 
   function currentKey() {
     const p = location.pathname.replace(/\/+$/, '') || '/';
-    if (p === '/' || p === '/index.html') return 'edit';
-    if (p === '/image') {
-      const h = location.hash.replace(/^#/, '');
-      return NAV.some((n) => n.key === h) ? h : 'create';
+    const h = location.hash.replace(/^#/, '');
+    // 无痕改字与图像生成现在同在一个页面（/），靠 hash 区分视图。
+    // /image 仍保留为兼容入口（会跳到 /#<工具>），所以这里也认它。
+    if (p === '/' || p === '/index.html' || p === '/image') {
+      return NAV.some((n) => n.key === h) ? h : 'edit';
     }
     return '';
   }

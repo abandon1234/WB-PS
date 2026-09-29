@@ -1,24 +1,61 @@
 # 图片文字处理与生成工具
 
-一个统一的「图像工作台」：三个页面共用同一套侧边栏外壳，导航直达各功能模块。
+一个统一的「图像工作台」：无痕改字 + 图像生成，共用一套侧边栏外壳。
 
-| 模块 | 页面 | 说明 |
+---
+
+## 先选版本：这个项目有两套后端
+
+**前端只有一份（`web/`），两个版本共用**；区别只在"跑在哪、后端用什么"。
+
+| | **本地版（Python）** | **Cloudflare 版（Workers）** |
 |---|---|---|
-| **无痕改字** | `/` | 扫描图片文字、还原样式、原位无痕替换 |
-| **图像工坊** | `/image` | 调用中转站 gpt-image-2 生成图片（文生图 / 多参照图） |
-| **作品库** | `/image#projects` | 生成与保存的图片，全部缓存在浏览器本机 |
+| 后端 | `app/` · FastAPI | `cloudflare/src/` · JS Worker |
+| 前端托管 | Python 直接托管 `web/` | `web/` 同步到 `cloudflare/public/static/` |
+| 启动 | `start.bat` / `start.sh` → `http://127.0.0.1:8000` | `cd cloudflare && npm run deploy` |
+| 无痕改字 | Python 本地推理（OpenCV / ONNX） | **浏览器内推理**（WASM，服务端不参与） |
+| 配置存储 | `data/` 本地文件 | Cloudflare KV |
+| 适合 | 离线用、想本地跑模型、二次开发 | 要公网访问、不想维护服务器 |
+
+- **本地版**详见本文档（下面所有内容默认讲它）
+- **Cloudflare 版**详见 [`cloudflare/README.md`](cloudflare/README.md)
+
+> 两个版本**共用同一份前端源码 `web/`**。
+> 改前端请改 `web/`，Cloudflare 版用 `npm run sync:assets` 同步过去；
+> `cloudflare/public/static/` 是**同步产物，不要直接编辑**。
+
+---
+
+## 模块与入口
+
+无痕改字与图像生成已合并为**同一个页面**，靠 hash 切换视图（不再跨页跳转）：
+
+| 模块 | 入口 | 说明 |
+|---|---|---|
+| **无痕改字** | `/` 或 `/#edit` | 扫描图片文字、还原样式、原位无痕替换 |
+| **图像工坊** | `/#create` | 调用中转站 gpt-image-2 生成图片 |
+| 　├ 图像融合 | `/#combine` | 传 1~4 张参考图，把主体融入新场景 |
+| 　├ 人物写真 | `/#portrait` | 保留人物特征生成新写真（竖版） |
+| 　└ 商品图生成 | `/#product` | 商品放进干净场景，输出电商图 |
+| **作品库** | `/#projects` | 生成与保存的图片，全部缓存在浏览器本机 |
 | **后台管理** | `/admin` | 中转站地址与 API Key 配置（需登录，密钥不下发前端） |
+
+> 老链接 `/image`、`/image#projects` 仍可用（会自动跳到新的 hash 入口）。
 
 ## 统一外壳
 
-`/` 与 `/image` 共用 `web/shell.css` + `web/shell.js`：
+所有页面共用 `web/shell.css` + `web/shell.js`（`/admin` 除外）：
 
-- **侧栏一处定义**，导航项就是普通 `<a href>`，跨页跳转与浏览器前进后退天然可用
+- **侧栏一处定义**，导航项是普通 `<a href>`，指向同一页的不同 hash
 - 分组：`图片工具`（无痕改字 / 自由生成 / 图像融合 / 人物写真 / 商品图生成）、
   `资源`（作品库，带实时数量徽标）、底部本机占用条 + 后台入口
-- **深链**：`/image#combine` 直接选中「图像融合」工具，`/image#projects` 直达作品库
+- **深链**：`/#combine` 直接选中「图像融合」工具，`/#projects` 直达作品库
 - 图标雪碧图由 `shell.js` 统一注入，各页面不再各抄一份
 - 侧栏折叠状态存 `localStorage`，窗口窄于 1100px 时**首次自动折叠**，之后完全听用户的
+
+> **改字与生成曾是两个独立页面**（`/` 与 `/image`），来回跳转每次要重新初始化
+> 本地引擎（切回改字实测 5.77s）。现已合并为**单页双视图**：`web/index.html`
+> 里并列 `#viewEdit` 与 `#viewImages`，切视图只换显隐、不重载，实测 **15~29ms**。
 
 `/admin` 刻意不引入外壳——它是独立外观，一眼能看出是「管理区」。
 
@@ -86,8 +123,9 @@ python -m app.main --port 9000     # 指定端口
 
 启动后：
 
-- 图片文字处理 → <http://127.0.0.1:8000/>
-- 图像工坊 → <http://127.0.0.1:8000/image>
+- 无痕改字 → <http://127.0.0.1:8000/>
+- 图像工坊 → <http://127.0.0.1:8000/#create>
+- 作品库 → <http://127.0.0.1:8000/#projects>
 - 后台管理 → <http://127.0.0.1:8000/admin>
 
 **后台首次打开会让你设置管理密码**（没有默认口令）。忘记密码时停止服务、
@@ -220,13 +258,16 @@ Helvetica vs Calibri（得分几乎打平），而形状 IoU 是拿真实笔画�
 
 # 模块二：图像工坊（AI 图片生成）
 
-独立页面 **`/image`**，通过 OpenAI 兼容中转站调用 `gpt-image-2` 生成图片。
+通过 OpenAI 兼容中转站调用 `gpt-image-2` 生成图片。
 配置管理挪到独立的后台页 **`/admin`**——生成页拿不到任何密钥，详见下节的隔离说明。
-与文字处理模块同样完全解耦：独立路由、独立静态资源、独立配置存储。
+与文字处理模块同样完全解耦：独立接口前缀、独立配置存储。
 
-## 两个页面
+> 它**曾是独立页面 `/image`**，现已并入主页面成为「生成视图」（`/#create`），
+> 与改字页共享外壳、共享一次加载。路由与接口都没变，老链接照常工作。
 
-### `/image` — 生成页（面向使用者）
+## 两个视图
+
+### 生成视图（面向使用者，`/#create`）
 
 左侧深色侧边栏 + 中部控制台 + 右侧舞台：
 
@@ -247,7 +288,7 @@ Helvetica vs Calibri（得分几乎打平），而形状 IoU 是拿真实笔画�
 
 | 工具 | 参照图 | 默认尺寸 | 自动附加的指令 |
 |---|---|---|---|
-| 自由生成 | 不需要（上传区隐藏） | 1024×1024 | 无，提示词原样发送 |
+| 自由生成 | **选传，最多 4 张** | 1024×1024 | 不传图时提示词原样发送；传了才加「参考所给图片的风格、构图或主体特征…」（**不**强约束"保持主体一致"——那是图像融合的活） |
 | 图像融合 | 1~4 张 | 自动（沿用参照图比例） | 「把参照图中的主体自然地融入以下场景，保持主体的外观与特征一致…光照、阴影、色温与场景保持统一，不要出现拼贴或抠图痕迹」 |
 | 人物写真 | 1 张 | 1024×1536（竖版） | 「以参照图中人物的五官、发型与气质为准…保持人物身份一致，不要改变面部特征；避免过度磨皮」 |
 | 商品图生成 | 1 张 | 1024×1024 | 「把参照图中的商品放进下面的场景…商品主体清晰完整、边缘干净、比例准确，不改变商品外观与颜色；不要出现文字、水印或多余道具」 |
@@ -339,7 +380,7 @@ Helvetica vs Calibri（得分几乎打平），而形状 IoU 是拿真实笔画�
   50 张就是 100MB 的 I/O。拆开后画廊只读几十 KB 的缩略图，点开灯箱才取原图。
 - 记录提示词、模型、尺寸、工具、时间、收藏等元数据，支持搜索与筛选。
 - 清空浏览器数据即彻底消失；`data/` 目录里除了配置没有任何图片。
-- 支持 `/image#projects` 深链直达作品库。
+- 支持 `/#projects` 深链直达作品库。
 
 ## 中转站协议（实测结论）
 
@@ -360,9 +401,13 @@ Helvetica vs Calibri（得分几乎打平），而形状 IoU 是拿真实笔画�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/image` | 生成页 |
+| GET | `/` · `/#create` | 主页面 / 生成视图（`/image` 为兼容入口，会跳转过来） |
 | GET | `/api/image/status` | 是否就绪、模型名、可选尺寸 |
-| POST | `/api/image/generate` | 生成（multipart：`prompt` / `size` / `n` / `references`×N） |
+| POST | `/api/image/generate` | 生成（multipart：`prompt` / `size` / `n` / `references`×N / `stream`） |
+| POST | `/api/image/generate` | **流式**同上加 `stream=1`：NDJSON 心跳 + `done`/`error`，上限 300s |
+
+> 生成慢时会超过边缘的空闲上限，所以前端默认走**流式**：服务端每 5 秒吐一行
+> 心跳保持连接，界面显示「已等待 Ns」。详见 `cloudflare/README.md`。
 
 **后台（全部需登录）**
 
@@ -417,54 +462,95 @@ IndexedDB 播种 6 张示例图，因此"作品库画廊""灯箱""后台仪表�
 - 尺寸菜单选中后是否**彻底从 DOM 移除**、点空白能否关闭（这个坑也踩过）
 - 改字页共用外壳且高亮正确、画布 / 属性面板 / 状态栏在位
 - 改字页真实流程：`DOM.setFileInputFiles` 塞图 → 识别 → 点列表项 → 编辑面板回填
-- **切页续做**：改一处 → 去 `/image` → 切回来，断言文字框数与改动数都还在
+- **切视图续做**：改一处 → 切到生成视图 → 切回来，断言文字框数与改动数都还在
+  （现在同页切换，不再跨页跳转，这条验证的是"不重载也能续做"）
 - **工具草稿独立**：四个工具各写不同提示词/尺寸/参照图，来回切断言互不串味
 - **草稿落本机**：`Page.reload` 后断言提示词、参照图、上一张结果都从本机恢复
 - 「关闭图片」应清掉本机快照，之后刷新不再自动恢复
-- 两个页面全程无 JS 异常
+- 全程无 JS 异常
 
 ---
 
 # 通用：项目结构
 
+**先看这一层：两个版本共用 `web/`，各自持有自己的后端。**
+
 ```
 WB-PS/
-├── app/
-│   ├── main.py            FastAPI 服务与接口（两个模块共用入口）
-│   ├── ocr_engine.py      OCR 多后端探测（rapidocr / paddleocr），统一输出
-│   ├── style_analyzer.py  颜色 / 字号 / 粗细 / 背景类型 / 对齐 的反推
-│   ├── text_eraser.py     掩膜构建 + 分级擦除 + 残留自检
-│   ├── text_renderer.py   字号实测校准、超采样绘制、墨迹对齐、清晰度匹配
-│   ├── fonts.py           系统字体 + 自定义字体扫描与样式匹配
-│   ├── pipeline.py        文字处理编排层（无状态，可复现）
-│   └── image_gen/         图像工坊（独立模块）
-│       ├── config.py      中转站配置存储（增删改查 / 启用禁用 / 当前项）
-│       ├── admin_auth.py  后台鉴权（PBKDF2 口令 + HMAC 会话令牌 + 登录限速）
-│       ├── client.py      中转站 API 客户端（协议处理 + 错误映射）
-│       └── routes.py      /image、/admin 页面与公开/后台两套接口
-├── web/                   前端（原生 HTML/CSS/JS，零构建）
-│   ├── shell.css/.js      共享外壳（设计令牌 + 侧栏导航 + 折叠 + 图标雪碧图）
-│   ├── index.html/.css/.js        无痕改字模块
-│   ├── image.html/.css/.js        图像工坊生成页
-│   ├── admin.html/.css/.js        后台管理页（独立外观，不引入外壳）
-│   ├── store.js           浏览器端作品库（IndexedDB 封装）
-│   ├── workspace.js       改字工作区断点续做（IndexedDB 封装）
-│   └── toolcache.js       生成页各工具独立草稿（IndexedDB 封装）
-├── tools/
-│   ├── make_test_image.py 生成覆盖纯色/渐变/纹理的测试图
-│   ├── selftest.py        文字处理算法自检 + 量化质量指标
-│   ├── font_match_test.py 字体匹配 + 笔画校准专项验证
-│   ├── api_test.py        文字处理 API 契约测试
-│   ├── image_api_test.py  图像工坊端到端测试（含泄露检查）
-│   ├── probe_multiref.py  探测中转站的多参照图支持方式
-│   ├── ui_shot.js         界面截图 + 交互回归（CDP 驱动系统 Edge）
-│   └── snapshot.py        打包完整快照 zip
-├── samples/               测试图与输出
-├── fonts/                 自定义字体目录（导入的字体放这里）
-├── data/                  配置目录（含 API key 与管理密码哈希，已 gitignore）
-├── requirements.txt
-└── start.bat / start.sh
+├── web/                        ★ 前端源码（两版本共用，改这里）
+│   ├── index.html              ★ 主页面：无痕改字 + 图像生成 双视图
+│   │                             （#viewEdit / #viewImages，hash 切换）
+│   ├── app.js                  改字模块交互（含视图路由）
+│   ├── image.js               图像生成模块（可独立成页，也可嵌入主页面）
+│   ├── shell.css/.js          共享外壳：设计令牌 + 侧栏 + 折叠 + 图标雪碧图
+│   ├── style.css              改字视图样式 + 双视图容器（.view-embed）
+│   ├── image.css              生成视图样式
+│   ├── admin.html/.css/.js    后台管理（独立外观，不引入外壳）
+│   ├── engine/                浏览器端推理引擎（WASM，与 Python 侧逐模块对齐）
+│   │   └── boot.js / localapi.js / style.js / erase.js / render.js …
+│   ├── store.js               作品库（IndexedDB）
+│   ├── workspace.js           改字工作区断点续做（IndexedDB）
+│   ├── toolcache.js           生成页各工具独立草稿（IndexedDB）
+│   ├── sw.js                  Service Worker（缓存 /assets/，约 40MB 模型）
+│   └── assets/                模型与运行时（向下游同步）
+│
+├── app/                        ● 本地版后端（Python / FastAPI）
+│   ├── main.py                服务入口与接口
+│   ├── ocr_engine.py          OCR 多后端探测（rapidocr / paddleocr）
+│   ├── style_analyzer.py      颜色 / 字号 / 粗细 / 背景 / 对齐 反推
+│   ├── text_eraser.py         掩膜构建 + 分级擦除 + 残留自检
+│   ├── text_renderer.py       字号校准、超采样绘制、墨迹对齐
+│   ├── fonts.py               系统字体 + 自定义字体扫描与匹配
+│   ├── pipeline.py            文字处理编排层（无状态，可复现）
+│   └── image_gen/             图像工坊
+│       ├── config.py          中转站配置存储（增删改查 / 启用禁用）
+│       ├── admin_auth.py      后台鉴权（PBKDF2 + HMAC 会话 + 登录限速）
+│       ├── client.py          中转站 API 客户端（协议处理 + 错误映射）
+│       └── routes.py          公开 / 后台两套接口
+│
+├── cloudflare/                 ● Cloudflare 版（Workers / JS）
+│   ├── src/                   Worker 源码：静态托管 + 生成代理
+│   │   ├── index.js           路由（页面/静态/接口）与兼容入口
+│   │   ├── gen.js             生成（流式 NDJSON + 心跳保活）
+│   │   ├── crypto.js          口令与会话（Workers 的 PBKDF2 上限 10 万轮）
+│   │   ├── providers.js       中转站配置（存 KV）
+│   │   └── routes/            后台管理接口
+│   ├── public/static/         ⚠ 同步产物 = web/ 的副本，不要直接编辑
+│   ├── scripts/sync-assets*.mjs   把 web/ 同步到 public/static/
+│   ├── tests/                 e2e + compat（Node 跑，不开浏览器）
+│   ├── wrangler.toml          Worker 配置与环境变量
+│   └── README.md              Cloudflare 版专属说明
+│
+├── tools/                     验证与工具（Python 算法自检 / Node 浏览器探针）
+│   ├── selftest.py            文字处理算法自检 + 量化指标
+│   ├── font_match_test.py     字体匹配 + 笔画校准专项
+│   ├── api_test.py            接口契约测试（需服务已启动）
+│   ├── image_api_test.py      图像工坊端到端测试（含泄露检查）
+│   ├── make_test_image.py     生成测试图
+│   ├── snapshot.py            打包完整快照 zip
+│   └── probe_*.mjs            浏览器端验证（CDP 驱动，见下）
+│
+├── samples/                   测试图与输出（out/ 已 gitignore）
+├── fonts/                     自定义字体（已 gitignore，避免分发版权字体）
+├── data/                      本地版配置（含 API key 与密码哈希，已 gitignore）
+├── wasm-poc/                  浏览器 WASM 方案验证报告
+├── requirements.txt           本地版依赖
+└── start.bat / start.sh       本地版启动入口
 ```
+
+### `tools/probe_*.mjs` 各管什么
+
+都是 CDP 驱动真实 Edge 的端到端验证，`node tools/xxx.mjs --base <地址>`：
+
+| 脚本 | 验证 |
+|---|---|
+| `probe_ui.mjs` | 改字全流程：导入字体 → 选图 → 识别 → 编辑 → 导出 |
+| `probe_gen.mjs` | 流式生成的 NDJSON 解析（用页面内伪造流，零成本） |
+| `probe_views.mjs` | 双视图切换：是否重载、耗时、深链、老链接兼容 |
+| `probe_prompt.mjs` | 生成页：参考图、提示词清空与字数 |
+| `probe_layout.mjs` | 各视图的实际可见性与尺寸（抓"元素在但看不见"） |
+| `probe_nav.mjs` | 量化页间跳转开销 |
+| `verify_online.mjs` | 线上站点整体探活 |
 
 ---
 

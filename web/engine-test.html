@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>引擎自检 · WB-PS</title>
+<style>
+  :root {
+    --bg:#16171a; --panel:#1e2024; --line:#2c2f35; --text:#e6e7ea; --muted:#8b909a;
+    --accent:#4a9eff; --ok:#4ec98a; --warn:#e0a13c; --bad:#e5605c;
+    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:22px; background:var(--bg); color:var(--text);
+         font:14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  h1 { font-size:17px; font-weight:500; margin:0 0 3px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+  .card h2 { font-size:13px; font-weight:500; margin:0 0 10px; color:var(--muted); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; padding:7px 14px; border-radius:7px; cursor:pointer;
+           border:1px solid var(--line); background:#26292e; color:var(--text); }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#0b1116; }
+  button:disabled { opacity:.4; cursor:default; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; }
+  td.num { font-family:var(--mono); font-size:12px; white-space:nowrap; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .pill { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11.5px; border:1px solid; }
+  .pill.ok { border-color:#2f6b4d; background:#16281f; color:var(--ok); }
+  .pill.no { border-color:#6b3a38; background:#2a1a1a; color:var(--bad); }
+  .bar { height:6px; border-radius:999px; background:#26292e; overflow:hidden; margin:8px 0 4px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--accent); transition:width .18s; }
+  #log { font-family:var(--mono); font-size:12px; color:var(--muted); white-space:pre-wrap;
+         max-height:170px; overflow:auto; margin-top:8px; }
+  canvas { max-width:100%; height:auto; border-radius:6px; display:block; }
+  .kv { display:flex; gap:20px; flex-wrap:wrap; font-size:13px; }
+  .kv b { font-family:var(--mono); font-weight:500; }
+</style>
+</head>
+<body>
+<h1>引擎自检</h1>
+<div class="sub">验证「模型缓存进浏览器 → 网页调用本地缓存推理」这条链路。</div>
+
+<div class="card">
+  <h2>1 · 缓存状态</h2>
+  <div class="kv" id="kv"><span class="sub">检测中…</span></div>
+  <div class="bar"><i id="bar"></i></div>
+  <div class="sub" id="barText"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="warm" class="primary">预热下载模型</button>
+    <button id="clear">清除资源缓存</button>
+    <button id="rerun">重新检测</button>
+  </div>
+  <div id="log"></div>
+</div>
+
+<div class="card">
+  <h2>2 · 缓存明细</h2>
+  <div id="files"><span class="sub">—</span></div>
+</div>
+
+<div class="card">
+  <h2>3 · 本地推理</h2>
+  <div class="row">
+    <button id="ocr" class="primary" disabled>跑一张识别</button>
+    <span class="sub" id="ocrStatus">等待模型</span>
+  </div>
+  <canvas id="preview" style="margin-top:12px"></canvas>
+</div>
+
+<div class="card">
+  <h2>4 · 完整流水线（识别 → 样式 → 擦除 → 重绘）</h2>
+  <div class="row">
+    <button id="pipeline" class="primary" disabled>跑完整流程</button>
+    <span class="sub" id="pipeStatus">等待模型</span>
+  </div>
+  <canvas id="result" style="margin-top:12px"></canvas>
+</div>
+
+<script type="module">
+import { ModelStore, registerServiceWorker, formatBytes } from './modelstore.js';
+import {
+  LocalEngine, analyze, detect, applyEdits, matToDataUrl, imageDataOf,
+  imageDataToBgrMat, matToImageData,
+} from './engine/index.js';
+import { analyzeMany } from './engine/style.js';
+import { erase } from './engine/erase.js';
+import { render } from './engine/render.js';
+
+const $ = (id) => document.getElementById(id);
+const log = (t) => { $('log').textContent += `${t}\n`; $('log').scrollTop = 1e9; };
+const setBar = (done, total) => {
+  const pct = total ? Math.min(100, (done / total) * 100) : 0;
+  $('bar').style.width = `${pct}%`;
+  $('barText').textContent = total
+    ? `${formatBytes(done)} / ${formatBytes(total)}（${pct.toFixed(1)}%）` : '';
+};
+
+const store = new ModelStore();
+let engine = null;
+
+async function refresh() {
+  const st = await store.status();
+  const est = await store.estimate();
+
+  $('kv').innerHTML = `
+    <span>就绪 <b class="ok">${st.ready.length}</b> / ${st.files.length}</span>
+    <span>已缓存 <b>${formatBytes(st.readyBytes)}</b></span>
+    <span>待下载 <b class="${st.missingBytes ? 'warn' : 'ok'}">${formatBytes(st.missingBytes)}</b></span>
+    <span>状态 <span class="pill ${st.complete ? 'ok' : 'no'}">${st.complete ? '可离线' : '未完整'}</span></span>
+    ${est ? `<span>本机占用 <b>${formatBytes(est.usage)}</b> / 配额 ${formatBytes(est.quota)}</span>` : ''}`;
+
+  if (st.complete) setBar(1, 1); else setBar(st.readyBytes, st.totalBytes);
+
+  $('files').innerHTML = `
+    <table>
+      <thead><tr><th>资源</th><th>档位</th><th>大小</th><th>状态</th><th>sha256</th></tr></thead>
+      <tbody>${st.files.map((f) => `
+        <tr>
+          <td>${f.label}<div class="sub" style="font-size:11.5px">${f.path}</div></td>
+          <td class="num">${f.kind}</td>
+          <td class="num">${formatBytes(f.bytes)}</td>
+          <td>${f.cached ? '<span class="pill ok">已缓存</span>' : '<span class="pill no">未缓存</span>'}</td>
+          <td class="num sub">${(f.sha256 || '').slice(0, 10)}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+  return st;
+}
+
+async function warm() {
+  $('warm').disabled = true;
+  try {
+    await store.persist();
+    await store.download((p) => {
+      if (p.phase === 'start') { log(`开始下载 ${p.count} 个文件`); setBar(0, p.total); }
+      else if (p.phase === 'file') log(`  ↓ ${p.label}`);
+      else if (p.phase === 'progress') setBar(p.done, p.total);
+      else if (p.phase === 'done') log(`完成：${formatBytes(p.done)}`);
+    });
+    await refresh();
+  } catch (err) {
+    log(`失败：${err.message}`);
+  } finally {
+    $('warm').disabled = false;
+  }
+}
+
+async function boot() {
+  const reg = await registerServiceWorker();
+  if (reg) {
+    // 关键时序：SW 注册完不等于页面已被它接管。
+    // 没被接管的页面，fetch 不经过 SW 的 fetch handler —— 下的模型不会进缓存，
+    // 白下一次。clients.claim() 会让当前页面立刻受控，这里等它生效再继续。
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((res) => {
+        const t = setTimeout(res, 3000);
+        navigator.serviceWorker.addEventListener('controllerchange',
+          () => { clearTimeout(t); res(); }, { once: true });
+      });
+    }
+    log(navigator.serviceWorker.controller
+      ? 'Service Worker 已接管页面，模型下载会写入缓存'
+      : 'Service Worker 尚未接管（刷新一次即生效）');
+  } else {
+    log('Service Worker 不可用，将每次联网加载模型');
+  }
+  await refresh();
+}
+
+async function ensureEngine() {
+  if (engine) return engine;
+  $('ocrStatus').textContent = '加载运行时…';
+  engine = await LocalEngine.create({
+    base: '/assets',
+    onProgress: (p) => { if (p.label) $('ocrStatus').textContent = `加载 ${p.label}…`; },
+  });
+  $('ocr').disabled = false;
+  $('pipeline').disabled = false;
+  $('ocrStatus').textContent = '就绪';
+  return engine;
+}
+
+function pullImageData(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  return { imageData: ctx.getImageData(0, 0, c.width, c.height), canvas: c };
+}
+
+function loadTestImage() {
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('测试图加载失败'));
+    i.src = `/samples/test_card.png?t=${Date.now()}`;
+  });
+}
+
+function drawItems(canvas, img, items, color = '#e5605c') {
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const g = canvas.getContext('2d');
+  if (img instanceof HTMLImageElement) g.drawImage(img, 0, 0);
+  g.strokeStyle = color;
+  g.lineWidth = 2;
+  g.font = '13px ui-monospace, monospace';
+  g.textBaseline = 'bottom';
+  items.forEach((it, i) => {
+    const r = it.rect || (() => {
+      const xs = it.box.map((p) => p[0]); const ys = it.box.map((p) => p[1]);
+      return { x: Math.min(...xs), y: Math.min(...ys),
+        w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    })();
+    g.strokeRect(r.x, r.y, r.w, r.h);
+    g.fillStyle = color;
+    g.fillRect(r.x, r.y - 16, g.measureText(String(i + 1)).width + 8, 16);
+    g.fillStyle = '#fff';
+    g.fillText(String(i + 1), r.x + 4, r.y - 3);
+  });
+}
+
+async function runOcr() {
+  $('ocr').disabled = true;
+  try {
+    const eng = await ensureEngine();
+    const img = await loadTestImage();
+    const { imageData } = pullImageData(img);
+
+    const bgr = imageDataToBgrMat(eng.cv, imageData);
+    const t0 = performance.now();
+    const out = await eng.ocr.run(bgr);
+    const ms = Math.round(performance.now() - t0);
+    bgr.delete();
+
+    drawItems($('preview'), img, out.items);
+    $('ocrStatus').textContent = `识别 ${out.items.length} 个文本块 · ${ms} ms`;
+    log(`识别完成：${out.items.length} 块，耗时 ${ms}ms`);
+    log(`前 3 块：${out.items.slice(0, 3).map((i) => i.text).join(' | ')}`);
+  } catch (err) {
+    console.error(err);
+    $('ocrStatus').textContent = `失败：${err.message}`;
+    log(`识别失败：${err.stack || err.message}`);
+  } finally {
+    $('ocr').disabled = false;
+  }
+}
+
+async function runPipeline() {
+  $('pipeline').disabled = true;
+  // 分步状态：卡住时能一眼看出停在哪一步（也供自动化轮询）
+  const st = window.__PIPE__ = { state: 'start', error: null, t0: Date.now(), steps: [] };
+  const mark = (s) => { st.state = s; st.steps.push(`${s}@${Date.now() - st.t0}ms`); };
+  const t0 = performance.now();
+  try {
+    mark('engine');
+    const eng = await ensureEngine();
+    mark('image');
+    const img = await loadTestImage();
+    const { imageData } = pullImageData(img);
+    const bgr = imageDataToBgrMat(eng.cv, imageData);
+
+    // 1) 检测 + 样式反推
+    mark('analyze');
+    let t = performance.now();
+    const res = await analyze(eng.cv, eng.ocr, eng.fonts, bgr, {});
+    const tAnalyze = Math.round(performance.now() - t);
+
+    drawItems($('preview'), img, res.items);
+    const styled = res.items.filter((i) => i.style && i.style.font_size);
+    log(`分析：${res.items.length} 块，${tAnalyze}ms，带样式 ${styled.length} 块`);
+    if (styled.length) {
+      const s = styled[0];
+      log(`  首块样式：字号 ${s.style.font_size} · 字色 rgb(${s.style.fg_color}) · `
+        + `背景 ${s.style.bg_type} · 笔宽 ${s.style.stroke_width} · 字体档 ${s.style.weight}`);
+    }
+
+    // 2) 改字：把前两块替换掉，走完整的「擦除 → 重绘」
+    const edits = {};
+    const picks = res.items.slice(0, 2);
+    picks.forEach((it, i) => { edits[String(it.id)] = { text: i === 0 ? '无痕改字' : 'ABCdef123' }; });
+
+    mark('apply');
+    t = performance.now();
+    const applied = applyEdits(eng.cv, eng.fonts, bgr, res.items, edits);
+    const tApply = Math.round(performance.now() - t);
+
+    log(`改字：擦除 ${applied.stats.erased} 处，重绘 ${applied.stats.rendered} 处，${tApply}ms`);
+    for (const r of applied.stats.log.slice(0, 4)) {
+      log(`  #${r.id} ${r.action} ${r.origin} → ${r.text}` +
+        (r.font_size ? ` [${r.family} ${r.font_size}px]` : '') +
+        (r.warnings && r.warnings.length ? ` ⚠ ${r.warnings[0]}` : '') +
+        (r.error ? ` ✗ ${r.error}` : ''));
+    }
+
+    // 3) 导出成图给眼睛看
+    mark('export');
+    const canvas = $('result');
+    canvas.width = applied.image.cols;
+    canvas.height = applied.image.rows;
+    canvas.getContext('2d').putImageData(matToImageData(eng.cv, applied.image), 0, 0);
+
+    const warnings = applied.stats.log.flatMap((r) => r.warnings || []);
+    $('pipeStatus').textContent =
+      `分析 ${tAnalyze}ms · 改字 ${tApply}ms · 共 ${Math.round(performance.now() - t0)}ms`
+      + (warnings.length ? ` · ${warnings.length} 条提示` : '');
+
+    bgr.delete();
+    applied.image.delete();
+    mark('done');
+  } catch (err) {
+    console.error(err);
+    st.state = 'error';
+    st.error = String((err && err.stack) || err);
+    $('pipeStatus').textContent = `失败：${err.message}`;
+    log(`流水线失败：${err.stack || err.message}`);
+  } finally {
+    $('pipeline').disabled = false;
+  }
+}
+
+$('warm').addEventListener('click', warm);
+$('rerun').addEventListener('click', refresh);
+$('ocr').addEventListener('click', runOcr);
+$('pipeline').addEventListener('click', runPipeline);
+$('clear').addEventListener('click', async () => {
+  await store.clear();
+  window.__CACHED_KEYS__ = null;
+  log('资源缓存已清除');
+  await refresh();
+});
+
+// 供自动化断言读取
+window.__WB__ = {
+  store, refresh, warm, ensureEngine, runOcr, runPipeline, diag, log,
+  // 逐步骤诊断需要单独调用各环节，这里把模块函数挂出来
+  mod: { imageDataToBgrMat, matToImageData, detect, analyze, analyzeMany, erase, render, applyEdits },
+  loadTestImage, pullImageData,
+};
+
+/* ---------------------------------------------------------------- 分步诊断
+   流水线一卡就是几分钟，看不出停在哪。把每步拆开单独计时，
+   结果写到 window.__DIAG__，外部轮询即可精确定位。 */
+async function diag() {
+  const rep = window.__DIAG__ = { steps: [], done: false, failed: null };
+  (async () => {
+    const step = async (name, fn) => {
+      const item = { name, ms: null, ok: null, info: null };
+      rep.steps.push(item);
+      const t0 = performance.now();
+      try {
+        const info = await fn();
+        item.ms = Math.round(performance.now() - t0);
+        item.ok = true;
+        if (info !== undefined) item.info = info;
+      } catch (e) {
+        item.ms = Math.round(performance.now() - t0);
+        item.ok = false;
+        item.error = String((e && (e.stack || e.message)) || e).split('\n').slice(0, 3).join(' | ');
+        throw e;
+      }
+    };
+
+    let bgr = null, imageData = null, items = null, eng = null;
+    try {
+      await step('engine', async () => { eng = await ensureEngine(); return 'ok'; });
+      await step('image', async () => {
+        const img = await loadTestImage();
+        imageData = pullImageData(img).imageData;
+        return `${imageData.width}x${imageData.height}`;
+      });
+      await step('bgr', async () => { bgr = imageDataToBgrMat(eng.cv, imageData); return `${bgr.cols}x${bgr.rows}`; });
+      await step('resize-probe', async () => {
+        const cv = eng.cv;
+        const src = new cv.Mat(20, 20, cv.CV_8UC3);
+        const out = [];
+        const tryIt = (tag, fn) => {
+          try { out.push(`${tag}:${fn()}`); } catch (e) { out.push(`${tag}:ERR ${String(e.message).slice(0, 48)}`); }
+        };
+        tryIt('A空dst+Size', () => { const d = new cv.Mat(); cv.resize(src, d, new cv.Size(10, 10), 0, 0, cv.INTER_AREA); const s = `${d.cols}x${d.rows}`; d.delete(); return s; });
+        tryIt('B预建dst', () => { const d = new cv.Mat(10, 10, cv.CV_8UC3); cv.resize(src, d, new cv.Size(10, 10), 0, 0, cv.INTER_AREA); d.delete(); return 'ok'; });
+        tryIt('C仅fx/fy', () => { const d = new cv.Mat(); cv.resize(src, d, new cv.Size(0, 0), 0.5, 0.5, cv.INTER_AREA); const s = `${d.cols}x${d.rows}`; d.delete(); return s; });
+        tryIt('D省略可选参', () => { const d = new cv.Mat(); cv.resize(src, d, new cv.Size(10, 10)); const s = `${d.cols}x${d.rows}`; d.delete(); return s; });
+        src.delete();
+        return out.join('  |  ');
+      });
+      await step('detect', async () => {
+        items = await detect(eng.cv, eng.ocr, bgr, {});
+        return `${items.length} 块`;
+      });
+      await step('style-1', async () => {
+        const s = analyzeMany(eng.cv, bgr, [items[0]])[0].style;
+        return `字号 ${s.font_size} 背景 ${s.bg_type} 笔宽 ${s.stroke_width} 字体档 ${s.weight}`;
+      });
+      await step('style-all', async () => {
+        analyzeMany(eng.cv, bgr, items);
+        return `${items.length} 块完成`;
+      });
+      await step('erase-1', async () => {
+        const r = erase(eng.cv, bgr, items[0].rect, items[0].style, { method: 'auto', grow: 2 });
+        const m = r.meta.method;
+        rm_mat(r.image);
+        return `method=${m} residual=${r.meta.residual}`;
+      });
+      await step('render-1', async () => {
+        const r = render(eng.cv, eng.fonts, bgr, items[0].rect, '无痕改字', items[0].style, {
+          match_source: bgr, source_text: items[0].text,
+        });
+        const info = `family=${r.family} size=${r.font_size} matched=${JSON.stringify(r.matched)}`;
+        rm_mat(r.image);
+        return info;
+      });
+      await step('apply', async () => {
+        const edits = {};
+        items.slice(0, 2).forEach((it, i) => {
+          edits[String(it.id)] = { text: i === 0 ? '无痕改字' : 'ABCdef123' };
+        });
+        const applied = applyEdits(eng.cv, eng.fonts, bgr, items, edits);
+        const info = `擦除 ${applied.stats.erased} 重绘 ${applied.stats.rendered}`;
+        rm_mat(applied.image);
+        return info;
+      });
+      await step('export', async () => 'ok');
+      rep.done = true;
+    } catch (e) {
+      rep.done = true;
+      rep.failed = String((e && (e.stack || e.message)) || e);
+    }
+  })();
+  return 'started';
+}
+
+function rm_mat(m) { try { m && m.delete(); } catch (_) {} }
+
+boot();
+</script>
+</body>
+</html>

@@ -32,16 +32,22 @@ const TOOLS = [
   {
     id: 'create', name: '自由生成', icon: '#i-spark',
     title: 'AI 图片生成',
-    desc: '纯文生图：用一段提示词直接生成全新画面，不依赖任何参照图。描述越具体越容易得到想要的效果：主体 + 场景 + 风格 + 光线。',
-    refs: { min: 0, max: 0 },
+    desc: '文生图：用一段提示词生成全新画面。也可以传 1~4 张参考图 —— 传了会参考其中的风格或主体，不传就是纯文生图。描述越具体越容易得到想要的效果：主体 + 场景 + 风格 + 光线。',
+    refs: { min: 0, max: 4 },          // 选传：不传=纯文生图，传了=带参考
     size: '1024x1024',
-    wrap: (p) => p,
+    // 没传参考图时提示词原样发送；传了就给一句轻量的参考说明，
+    // 不写成「必须保持主体一致」那种强约束 —— 自由生成不承担"保主体"的职责，
+    // 那是「图像融合」的活。想强保主体的话工具自身会提示去换工具。
+    wrap: (p, hasRefs) => (hasRefs
+      ? '参考所给图片的风格、构图或主体特征，生成下面的画面：\n' + p
+        + '\n要求：画面自然统一，不要出现拼贴或抠图痕迹。'
+      : p),
     placeholder: '描述你想生成的画面…\n例如：生成一个小狗，坐在草地上，阳光明媚，高清摄影风格',
     chips: ['生成一个小狗', '未来城市夜景，赛博朋克风格，霓虹灯', '极简扁平插画，女孩在窗边看书', '水墨风格的远山与孤舟'],
     hints: ['描述越具体越准：主体 + 场景 + 风格 + 光线',
             '提示词原样发送，不做任何改写',
-            '要基于已有图片生成？用左侧「图像融合」或「人物写真」'],
-    note: '自由生成是纯文生图，不需要参照图。要基于已有图片生成，请用「图像融合」「人物写真」或「商品图生成」。',
+            '可传 1~4 张参考图（选传）；要严格保持主体外观一致请用「图像融合」'],
+    note: '',
   },
   {
     id: 'combine', name: '图像融合', icon: '#i-layers',
@@ -114,6 +120,13 @@ const SIZES = [
 ];
 const COUNTS = [1, 2, 3, 4];
 
+/* 单次生成最多等多久（秒）。
+   默认走流式：服务端每 5 秒吐一行心跳保活，连接不会被边缘判超时，
+   所以上限可以到分钟级；最终由服务端的 MAX_STREAM_TIMEOUT 收口。
+   （非流式的老路径受 Cloudflare 边缘约 100s 空闲上限约束，
+   服务端那边对应 MAX_UPSTREAM_TIMEOUT=90） */
+const STREAM_TIMEOUT = 300;
+
 /* ---------------------------------------------------------------- 状态 */
 const S = {
   tool: TOOLS[0],
@@ -153,18 +166,75 @@ function toast(msg, kind = '') {
   }, 2800);
 }
 
-async function api(url, opt = {}) {  const r = await fetch(url, { credentials: 'same-origin', ...opt });
+/** 把服务端的 {message,hint,detail} 变成带上下文的 Error */
+function mkErr(status, d, fallback) {
+  const obj = (d && typeof d === 'object') ? d : {};
+  const err = new Error(typeof d === 'string' ? d : (obj.message || fallback || `HTTP ${status}`));
+  err.status = status;
+  err.detail = obj.detail || '';
+  err.hint = obj.hint || '';
+  return err;
+}
+
+async function api(url, opt = {}) {
+  const r = await fetch(url, { credentials: 'same-origin', ...opt });
   let body = null;
   try { body = await r.json(); } catch (_) { /* 非 JSON */ }
-  if (!r.ok) {
-    const d = (body && body.detail) || {};
-    const err = new Error(typeof d === 'string' ? d : (d.message || `HTTP ${r.status}`));
-    err.status = r.status;
-    err.detail = typeof d === 'object' ? (d.detail || '') : '';
-    err.hint = typeof d === 'object' ? (d.hint || '') : '';
-    throw err;
-  }
+  if (!r.ok) throw mkErr(r.status, body && body.detail, `HTTP ${r.status}`);
   return body;
+}
+
+/**
+ * 生成接口（流式）。
+ *
+ * 为什么要流式：上游出图可能超过 Cloudflare 边缘约 100 秒的**空闲**上限
+ * （只要连接上持续有数据就不会断，实测 151 秒的流能完整送达）。
+ * 一次性等 JSON 的话，慢的提示词必被掐断（线上实测踩到「生成超时（超过 90s）」）。
+ *
+ * 协议：NDJSON，一行一个 JSON
+ *   {"type":"start","timeout":300}
+ *   {"type":"tick","elapsed":15}      ← 每 5 秒一行，纯粹用来保活 + 给界面报进度
+ *   {"type":"done", ok:true, images:[...]}  或  {"type":"error", error:{message,hint,detail}}
+ *
+ * 服务端不支持流式时（例如老版本 Python 后端）自动退回一次性 JSON。
+ */
+async function apiGenerate(url, fd, { signal, onTick } = {}) {
+  const r = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin', signal });
+  const ctype = r.headers.get('content-type') || '';
+
+  if (!ctype.includes('ndjson') || !r.body) {
+    let body = null;
+    try { body = await r.json(); } catch (_) { /* 非 JSON */ }
+    if (!r.ok) throw mkErr(r.status, body && body.detail, `HTTP ${r.status}`);
+    return body;
+  }
+
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let result = null;
+  let streamErr = null;
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let msg;
+      try { msg = JSON.parse(line); } catch (_) { continue; }
+      if (msg.type === 'tick' || msg.type === 'start') { if (onTick) onTick(msg); }
+      else if (msg.type === 'done') result = msg;
+      else if (msg.type === 'error') streamErr = msg.error || { message: '生成失败' };
+    }
+  }
+
+  if (streamErr) throw mkErr(streamErr.status || 504, streamErr, '生成失败');
+  if (!result) throw new Error('生成中断：连接被关闭（可能是网络波动，重试即可）');
+  return result;
 }
 
 /* ================================================================ 工具草稿
@@ -205,6 +275,7 @@ function applyDraft(t, d) {
   $('prompt').value = d.prompt || '';
   applySizeLabel();
   $('pillCountText').textContent = `${S.count} 张`;
+  updatePromptMeta();          // 草稿/切工具都会走到这，字数与清空按钮跟着刷新
 }
 
 /** 给界面渲染用的元信息：去掉 images —— 那是几 MB 的 base64，草稿里不能留 */
@@ -362,8 +433,38 @@ function dropResultOf(id) {
   return hit;
 }
 
+/* 嵌进主页面时，把"显示哪个工具/视图"的能力暴露出去，
+   由 app.js 的视图路由按 hash 调用 —— 生成视图内部的状态仍归本模块管。 */
+window.WBImage = {
+  showKey(key) {
+    if (!key) return;
+    if (key === 'projects') { switchView('projects'); return; }
+    if (TOOLS.some((t) => t.id === key)) { selectTool(key); return; }
+  },
+  get ready() { return draftsReady; },
+  get view() { return S.view; },
+  get tool() { return S.tool && S.tool.id; },
+};
+
+/* 本模块既可以独立成页（/image），也可以嵌进无痕改字主页面（/）。
+   嵌进去时外层用 #viewImages 这个容器包着，切换视图要连它一起显隐；
+   而且它和主页面各自的 hash（#edit / #combine）语义不同，
+   所以嵌进模式不再改 URL —— 否则会把主页面的 hash 冲掉。
+
+   ⚠️ 这两个定义必须放在 init() **之前**：init() 是立即执行的 IIFE，
+   若定义在后面，会撞上 const 的暂时性死区（报
+   "Cannot access 'EMBEDDED' before initialization"）。 */
+const EMBEDDED = () => !!document.getElementById('viewImages');
+const embeddedBox = () => document.getElementById('viewImages');
+/** 生成区当前是否真的显示着（嵌入模式下模块内部状态可能与实际显示不一致） */
+const isImagesVisible = () => {
+  const b = embeddedBox();
+  return !!(b && !b.hidden && getComputedStyle(b).display !== 'none');
+};
+
 /* ================================================================ 初始化 */
 (async function init() {
+  // 嵌入模式下页面里已经有标题栏/工具区，这套初始化只该在独立成页时跑
   bindRefs();
   bindPrompt();
   bindPills();
@@ -372,13 +473,14 @@ function dropResultOf(id) {
   bindProjects();
   bindLightbox();
 
-  // hash 路由先挂上：后面任何一步渲染出错，深链和侧栏高亮都不该跟着失效
-  window.addEventListener('hashchange', applyHash);
+  // hash 路由先挂上：后面任何一步渲染出错，深链和侧栏高亮都不该跟着失效。
+  // 嵌入模式不接管 hash —— 外层靠它决定显示改字还是生成。
+  if (!EMBEDDED()) window.addEventListener('hashchange', applyHash);
 
   // 先把四个工具的本机草稿读回内存，再决定界面该显示哪一个
   await preloadDrafts();
   draftsReady = true;
-  applyHash();
+  if (!EMBEDDED()) applyHash();
   if (S.restored) toast('已恢复上次编辑的内容', 'ok');
 
   // 关页 / 切后台时立刻落盘，别指望防抖窗口能赶上
@@ -387,8 +489,10 @@ function dropResultOf(id) {
     if (document.visibilityState === 'hidden') flushDraft();
   });
 
-  $('genKey').textContent = modKey + '3';
-  $('prompt').placeholder = S.tool.placeholder;
+  const k = $('genKey');
+  if (k) k.textContent = modKey + '3';
+  const pe = $('prompt');
+  if (pe) pe.placeholder = S.tool.placeholder;
   try {
     applySizeLabel();
     renderRefs();
@@ -405,14 +509,27 @@ function dropResultOf(id) {
   if (!S.status.ready) {
     toast(`后台未就绪：${S.status.message}`, 'warn');
   }
+
+  // 嵌进主页面时，由外层根据 hash 决定是否显示生成区；
+  // 这里广播一声，外层收到后再决定 —— 免得两边各切换一次、闪一下。
+  if (EMBEDDED()) {
+    window.dispatchEvent(new CustomEvent('wb-images-ready'));
+  }
 })();
 
 /* ================================================================ 工具切换 */
 function selectTool(id) {
   const t = TOOLS.find(x => x.id === id);
   if (!t) return;
+  // 已经是这个工具时，仍要确保生成区是显示状态 —— 用户可能是从改字视图点过来的，
+  // 那时 S.view 还是 'generate'（模块内部状态没变），但外层显示的是改字视图。
+  if (S.applied === t.id) {
+    if (S.view !== 'generate') switchView('generate', t.id);
+    else if (EMBEDDED() && !isImagesVisible()) switchView('generate', t.id);
+    setHash(t.id);
+    return;
+  }
   if (S.view !== 'generate') switchView('generate', t.id);
-  if (S.applied === t.id) { setHash(t.id); return; }
 
   // 离开当前工具前，先把它的草稿收好（内存 + 本机），切回来才不会丢
   if (S.applied) {
@@ -441,16 +558,54 @@ function selectTool(id) {
 /** 把当前视图/工具写进 URL（#projects 或 #<工具 id>），便于深链与侧栏高亮 */
 function setHash(key) {
   const want = '#' + key;
+  if (EMBEDDED()) {
+    // 嵌入模式下 hash 由外层持有（外层还要据此显示/隐藏视图），
+    // 所以走外层的接口，别自己 replaceState —— 否则两边来回打架。
+    if (window.WBShowImages) { window.WBShowImages(key); return; }
+  }
   if (location.hash !== want) history.replaceState(null, '', want);
   if (window.WBShell) WBShell.syncActive();
 }
+
+/* 本模块既可以独立成页（/image），也可以嵌进无痕改字主页面（/）。
+   嵌进去时外层用 #viewImages 这个容器包着，切换视图要连它一起显隐；
+   而且它和主页面各自的 hash（#edit / #combine）语义不同，
+   所以嵌进模式不再改 URL —— 否则会把主页面的 hash 冲掉。
+
+   ⚠️ EMBEDDED / embeddedBox 的定义在 init() 之前（见上方），
+   那是立即执行的 IIFE，定义放后面会撞 const 的暂时性死区。 */
 
 function switchView(v, hashKey) {
   S.view = v;
   $('viewGenerate').hidden = v !== 'generate';
   $('viewProjects').hidden = v !== 'projects';
+  if (EMBEDDED()) {
+    // 嵌入模式：显示生成区交给外层，并且**主动喊一声**。
+    // 不能只改 hash 等外层响应 —— 从空 hash 的首页点进来时那句
+    // hashchange 并不总会派发，表现成"点了没反应"（实测踩到）。
+    const key = v === 'projects' ? 'projects' : (hashKey || S.tool.id);
+    if (window.WBShowImages) window.WBShowImages(key);
+    else showEmbedded(true);
+    if (v === 'projects') refreshLibrary();
+    return;
+  }
   setHash(v === 'projects' ? 'projects' : (hashKey || S.tool.id));
   if (v === 'projects') refreshLibrary();
+}
+
+/** 嵌入模式下显示/隐藏整个生成区（并同步主页面的工具区显隐） */
+function showEmbedded(on) {
+  const box = embeddedBox();
+  if (!box) return;
+  box.hidden = !on;
+  box.classList.toggle('on', on);
+  // 主页面自己的编辑区在生成模式下要让位
+  const edit = document.getElementById('viewEdit');
+  if (edit) {
+    edit.hidden = on;
+    edit.classList.toggle('on', !on);
+  }
+  document.body.classList.toggle('mode-images', on);
 }
 
 /** URL hash → 界面状态。支持 /image#projects 与 /image#combine 这类深链。 */
@@ -486,7 +641,7 @@ function bindRefs() {
 function addRefs(files) {
   const t = S.tool;
   if (t.refs.max === 0) {
-    toast(`「${t.name}」不需要参照图，要基于图片生成请换「图像融合」等工具`, 'warn');
+    toast(`「${t.name}」不支持参照图`, 'warn');
     return;
   }
   const room = t.refs.max - S.refs.length;
@@ -538,7 +693,7 @@ function renderRefs() {
   renderRefZone();
 }
 
-/** 不同工具的参照图区不一样：自由生成干脆不显示上传框 */
+/** 不同工具的参照图区不一样：不需要参照图的工具直接不显示上传框 */
 function renderRefZone() {
   const t = S.tool;
   const noRef = t.refs.max === 0;
@@ -547,7 +702,11 @@ function renderRefZone() {
   if (noRef) $('refNoteText').textContent = t.note || '该工具不需要参照图。';
   else {
     const label = '拖入或点击上传图片';
-    const hint = `JPG、PNG、WebP · 单张不超过 8MB · 需要 ${refRange(t)}`;
+    // 选传（min=0）时说"选填"，别说"需要 0~4 张"—— 那读起来很别扭
+    const range = refRange(t);
+    const hint = t.refs.min === 0
+      ? `JPG、PNG、WebP · 单张不超过 8MB · 选填，最多 ${t.refs.max} 张`
+      : `JPG、PNG、WebP · 单张不超过 8MB · 需要 ${range}`;
     const inner = $('dropzone').querySelector('.dz-inner');
     if (inner) {
       inner.querySelector('p').textContent = label;
@@ -603,9 +762,40 @@ function bindPrompt() {
   const ta = $('prompt');
   ta.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
+    // Esc 清空：输入框里按 Esc 是常见预期，但**有内容时才拦**，
+    // 没内容就让事件继续冒泡（那个 Escape 是关灯箱/弹层的）
+    if (e.key === 'Escape' && ta.value) { e.preventDefault(); clearPrompt(); }
   });
-  // 每个工具有自己的提示词：边写边存，切走时不用依赖「切走那一刻」的读取
-  ta.addEventListener('input', () => touch());
+  // 每个工具有自己的提示词：边写边存，切走时不用依赖「切走那一刻」的读取。
+  // 计数要立刻反映（touch 是节流的，所以这里单独调一次）。
+  ta.addEventListener('input', () => { updatePromptMeta(); touch(); });
+
+  const btn = $('btnClearPrompt');
+  if (btn) btn.addEventListener('click', clearPrompt);
+  updatePromptMeta();
+}
+
+/** 清空提示词（同时把字数与按钮状态收一下，并落盘草稿） */
+function clearPrompt() {
+  const ta = $('prompt');
+  if (!ta) return;
+  if (!ta.value) return;
+  ta.value = '';
+  ta.focus();
+  updatePromptMeta();         // 字数归零 + 收起清空按钮（touch 不管界面，必须单独调）
+  touch();                    // 落盘草稿
+  toast('已清空提示词', 'ok');
+}
+
+/** 刷新「字数」与「清空」按钮的显隐：空的时候不显示清空，免得挂个没用的按钮 */
+function updatePromptMeta() {
+  const ta = $('prompt');
+  if (!ta) return;
+  const n = ta.value.length;
+  const cnt = $('promptCount');
+  if (cnt) cnt.textContent = n ? `${n} 字` : '可选';
+  const btn = $('btnClearPrompt');
+  if (btn) btn.hidden = n === 0;
 }
 
 function renderToolChips() {
@@ -615,6 +805,7 @@ function renderToolChips() {
     const ta = $('prompt');
     ta.value = b.dataset.p;
     ta.focus();
+    updatePromptMeta();
     touch();
   }));
 }
@@ -769,8 +960,11 @@ async function generate() {
     return;
   }
 
-  // 每个工具往提示词里拼自己的指令，这样同样的输入也会得到不同的结果
-  const finalPrompt = t.wrap ? t.wrap(prompt) : prompt;
+  // 每个工具往提示词里拼自己的指令，这样同样的输入也会得到不同的结果。
+  // 第二个参数告诉 wrap "本次是否带了参考图" —— 自由生成要据此决定
+  // 是纯文生图、还是加上一句参考说明。
+  const hasRefs = S.refs.length > 0;
+  const finalPrompt = t.wrap ? t.wrap(prompt, hasRefs) : prompt;
   S.lastPrompt = prompt;
   S.lastSent = finalPrompt;
 
@@ -790,15 +984,27 @@ async function generate() {
   fd.append('tool', t.id);
   fd.append('size', S.size);
   fd.append('n', String(S.count));
+  // 走流式：服务端每 5 秒吐一行心跳保活，慢的中转站也不会被边缘判超时。
+  // 服务端用 MAX_STREAM_TIMEOUT 收口（当前 300s），客户端说得再大也不会越界。
+  fd.append('stream', '1');
+  fd.append('timeout', String(STREAM_TIMEOUT));
   S.refs.forEach((r, i) =>
     fd.append('references', r.file, r.file.name || `ref${i + 1}.png`));
 
   S.controller = new AbortController();
   try {
+    // 等待期间实时报进度：上游慢的时候，用户至少知道还活着（心跳每 5 秒一行）
+    const baseSub = $('loadingSub').textContent;
+    const onTick = (m) => {
+      const s = m.elapsed || 0;
+      $('loadingSub').textContent = `${baseSub} · 已等待 ${s}s`
+        + (s >= 60 ? '（上游较慢，最长等 ' + STREAM_TIMEOUT + ' 秒）' : '');
+    };
+
     let res;
     try {
-      res = await api('/api/image/generate', {
-        method: 'POST', body: fd, signal: S.controller.signal,
+      res = await apiGenerate('/api/image/generate', fd, {
+        signal: S.controller.signal, onTick,
       });
     } catch (e) {
       // 多图被拦时，拼成一张再试一次
@@ -809,9 +1015,11 @@ async function generate() {
         fd2.append('prompt', prompt);
         fd2.append('size', S.size);
         fd2.append('n', String(S.count));
+        fd2.append('timeout', String(STREAM_TIMEOUT));
+        fd2.append('stream', '1');
         fd2.append('references', merged, merged.name);
-        res = await api('/api/image/generate', {
-          method: 'POST', body: fd2, signal: S.controller.signal,
+        res = await apiGenerate('/api/image/generate', fd2, {
+          signal: S.controller.signal, onTick,
         });
         toast('已改用拼图方式生成', 'warn');
       } else {
@@ -960,10 +1168,24 @@ async function downloadImage(im) {
 
 function renderError(e) {
   showState('stateError');
-  $('errTitle').textContent = e.status === 504 ? '生成超时' : '生成失败';
-  $('errMsg').textContent = e.message || '未知错误';
-  $('errHint').hidden = !e.hint;
-  $('errHint').textContent = e.hint || '';
+
+  // 534/524 是 Cloudflare 边缘自己的超时（不是我们主动放弃的 504）：
+  // 中转站还在跑，但边缘等不到响应就断开了。这两种要分开讲，
+  // 否则用户会以为是我们设的 60s 上限太短。
+  const edgeTimeout = e.status === 524 || e.status === 522;
+  $('errTitle').textContent = (e.status === 504 || edgeTimeout) ? '生成超时' : '生成失败';
+  $('errMsg').textContent = edgeTimeout
+    ? '等待中转站响应超过边缘上限（约 100 秒）'
+    : (e.message || '未知错误');
+
+  let hint = e.hint || '';
+  if (!hint && (e.status === 504 || edgeTimeout)) {
+    hint = '中转站出图慢。可先试：把张数降到 1、尺寸改小一档，或换一个更快的中转站 —— '
+      + '单次请求在 Cloudflare 边缘最多等约 100 秒，慢过这个就只能靠降低单次工作量。';
+  }
+  $('errHint').hidden = !hint;
+  $('errHint').textContent = hint;
+
   const detail = (e.detail || '').trim();
   $('errDetailWrap').hidden = !detail;
   $('errDetail').textContent = detail;
@@ -1116,12 +1338,15 @@ async function downloadRec(id) {
 
 /* ================================================================ 灯箱 */
 function bindLightbox() {
-  $('lbClose').addEventListener('click', closeLightbox);
+  // 容错：本模块可能被嵌进别的页面（元素未必齐全），
+  // 任何一个元素缺失都不该让整个模块的初始化挂掉 —— 那会让"生成"整块不可用。
+  const close = $('lbClose');
+  if (close) close.addEventListener('click', closeLightbox);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      if (!$('lightbox').hidden) closeLightbox();
-      else closePop();
-    }
+    if (e.key !== 'Escape') return;
+    const lb = $('lightbox');
+    if (lb && !lb.hidden) closeLightbox();
+    else closePop();
   });
 }
 

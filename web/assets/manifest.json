@@ -1,0 +1,64 @@
+{
+  "version": "1",
+  "generatedAt": "2026-09-27T07:50:15.348Z",
+  "totalBytes": 41368642,
+  "fileCount": 8,
+  "files": [
+    {
+      "path": "/assets/char_dict.json",
+      "bytes": 46135,
+      "sha256": "56b0f6c6e802b5c5a297d2d79b1fcf6f7c514d9550338f5818c1517035383249",
+      "kind": "core",
+      "label": "识别字典"
+    },
+    {
+      "path": "/assets/models/ch_PP-OCRv3_det_infer.onnx",
+      "bytes": 2432880,
+      "sha256": "3439588c030faea393a54515f51e983d8e155b19a2e8aba7891934c1cf0de526",
+      "kind": "model",
+      "label": "文字检测模型"
+    },
+    {
+      "path": "/assets/models/ch_PP-OCRv3_rec_infer.onnx",
+      "bytes": 10690752,
+      "sha256": "897a3ededb38fee0dae2c1ccee38241f37df202c9509e3abca02e9217c5ee615",
+      "kind": "model",
+      "label": "文字识别模型"
+    },
+    {
+      "path": "/assets/models/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+      "bytes": 585532,
+      "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+      "kind": "model",
+      "label": "方向分类模型"
+    },
+    {
+      "path": "/assets/vendor/opencv.js",
+      "bytes": 13298869,
+      "sha256": "b873c8211421da7b9bf41ae157a923f05a46a0b8d3e5904c44c6f3ad6d39a1bd",
+      "kind": "core",
+      "label": "OpenCV 运行时"
+    },
+    {
+      "path": "/assets/vendor/ort-wasm-simd-threaded.mjs",
+      "bytes": 24381,
+      "sha256": "e13f7f94fc51b4ca72b12faeb1ee95f4ace6dfbc8939bc718aabdc0a27c4299b",
+      "kind": "core",
+      "label": "ONNX Runtime glue"
+    },
+    {
+      "path": "/assets/vendor/ort-wasm-simd-threaded.wasm",
+      "bytes": 14239897,
+      "sha256": "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2",
+      "kind": "core",
+      "label": "ONNX Runtime WASM"
+    },
+    {
+      "path": "/assets/vendor/ort.wasm.min.js",
+      "bytes": 50196,
+      "sha256": "faece07e84faa9001f5104bbe4e5c70861d06cb2376a0dea1fa0ad33a67adc81",
+      "kind": "core",
+      "label": "ONNX Runtime"
+    }
+  ]
+}

@@ -229,6 +229,37 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .font-tools .mini-btn { display: inline-grid; place-items: center; }
 .font-count { font-size: 10.5px; color: var(--amber); margin-left: auto; white-space: nowrap; }
 
+/* ---------------- 双视图容器 ---------------- */
+/* 无痕改字与图像生成同在一个页面，切视图只换显隐、不重新加载
+   （以前是两次页面加载，切回来要重新初始化本地引擎，实测 5.77s）。
+   注意：不能只靠 [hidden] —— 两个视图各自的布局都声明了 display，
+   会盖过浏览器默认的 [hidden]{display:none}。所以这里显式写死。
+
+   高度链路：.app{grid,height:100vh} → .main{flex column} → .view-embed{flex:1}
+   生成视图内部的 #viewGenerate 是 grid（352px 1fr），它要求父级有确定高度，
+   所以 .view-embed.on 必须是 flex 且能撑满，不能用 display:block
+   （block 不会把高度传下去，实测表现为内部元素 0×0、整页空白）。 */
+.view-embed { display: none; }
+/* flex: 1 1 auto（不是 1 1 0%）——
+   父级 .main 是 flex column 但高度由内容/视口共同决定，
+   用 flex-basis:0 时算不出最终高度，实测表现为容器 rect 恒为 0×0、整页空白。
+   用 auto 作基准，再靠 min-height:0 + flex-grow 撑满，才拿得到高度。 */
+.view-embed.on { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+/* 生成视图：内部是 .view（section），让它撑满容器高度 -->
+   .view 自身声明了 flex:1，但它需要一个 flex 父级才生效，所以这里保持 flex。 */
+#viewImages.on { display: flex; flex: 1 1 auto; min-height: 0; }
+#viewImages.on > .view { flex: 1 1 auto; min-height: 0; }
+
+/* 字体搜索框：本机字体常有两三百个，原生 select 不支持搜索，靠这个收窄候选。
+   和下面的下拉只隔 5px，视觉上是一组。 */
+.font-filter { margin-bottom: 5px; font-size: 11.5px; }
+.font-filter::placeholder { color: var(--muted); }
+/* 字体列表：内嵌固定高度的可滚动列表（不用原生弹出层 —— 几百项会铺满整屏）。
+   注意要覆盖 .input 的 height:31px，否则 size=8 会被压成一行。 */
+select.font-list { height: auto; min-height: 126px; max-height: 190px; overflow-y: auto; padding: 3px; line-height: 1.55; }
+select.font-list optgroup { font-size: 10.5px; color: var(--muted); font-style: normal; }
+select.font-list option { font-size: 12px; padding: 1px 4px; }
+
 /* ---------------- 表单 ---------------- */
 .field { margin-bottom: 11px; }
 .field > label { display: block; font-size: 11.5px; color: var(--text-2); margin-bottom: 5px; }
