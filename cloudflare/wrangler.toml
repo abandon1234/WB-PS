@@ -13,6 +13,30 @@ main = "src/index.js"
 compatibility_date = "2026-09-25"
 compatibility_flags = ["nodejs_compat"]
 
+# workers.dev / Preview URL 显式关闭。
+#
+# 配置了 routes（自定义域名）后 wrangler 默认就会关掉它们，写出来是为了两点：
+# 一是部署日志不再每次刷两条 warning，二是避免"workers.dev 地址怎么突然没了"
+# 这种排查成本。`*.workers.dev` 国内本就直连不通，留着也没用。
+# 需要海外/VPN 调试的备用入口时，把下面两行改成 true 再部署。
+workers_dev = false
+preview_urls = false
+
+# 自定义域名。
+#
+# 为什么必须有：`*.workers.dev` 在国内被 DNS 污染 + 连接超时，实测直接打不开
+# （net::ERR_CONNECTION_TIMED_OUT），自持域名走 Cloudflare 才通。
+# 写进配置而不是只在 Dashboard 点一下，是为了防止后续 `wrangler deploy`
+# 因为配置里没有这条而把绑定覆盖掉。
+#
+# ⚠️ 位置很关键：必须放在任何 [table] 之前。TOML 里一张表会一直延伸到下一个表头，
+# 之前把这段放在 [assets] 之后，它被解析成了 assets.routes，wrangler 直接忽略
+# （部署日志里的 "Unexpected fields found in assets field: routes"），
+# 等于域名绑定从没随配置下发过。
+routes = [
+  { pattern = "ps.ysw69.dpdns.org", custom_domain = true }
+]
+
 # 静态前端：web/ 同步到 public/（页面脚本在 public/static/，模型在 public/assets/）
 [assets]
 directory = "./public"
@@ -33,16 +57,6 @@ run_worker_first = true
 # （/ → /static/index.html）永远拿不到内容，首页成了一次多余跳转。
 # 关掉之后「要哪个文件就给哪个文件」，路径语义和本地一致。
 html_handling = "none"
-
-# 自定义域名。
-#
-# 为什么必须有：`*.workers.dev` 在国内被 DNS 污染 + 连接超时，实测直接打不开
-# （net::ERR_CONNECTION_TIMED_OUT），自持域名走 Cloudflare 才通。
-# 写进配置而不是只在 Dashboard 点一下，是为了防止后续 `wrangler deploy`
-# 因为配置里没有这条而把绑定覆盖掉。
-routes = [
-  { pattern = "ps.ysw69.dpdns.org", custom_domain = true }
-]
 
 [[kv_namespaces]]
 binding = "KV"
