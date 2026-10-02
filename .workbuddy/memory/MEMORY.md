@@ -34,5 +34,13 @@
   `/static/*` 走静态资源层，版本号是防浏览器缓存读到旧脚本的唯一手段（`/assets/*`
   才有 immutable 头，页面脚本没有）。
 - 每轮改动结束就 `git commit`；`git push` 之前必须先问用户（见 README 版本管理）。
+- **部署**：`cd cloudflare && ./node_modules/.bin/wrangler deploy`。
+  `wrangler.toml` 改完**不能只看 "Deployed" 就算成功** —— 必须核对 triggers 里有没有
+  `ps.ysw69.dpdns.org (custom domain)` 这一行（没有 = `routes` 未被读到），
+  并逐条读 WARNING。踩过：`routes` 写在 `[assets]` 之后被 TOML 当成 `assets.routes`，
+  静默失效很久；`routes` 必须放在任何 `[table]` 之前。
+- 部署后线上自检：`curl -s "https://ps.ysw69.dpdns.org/static/index.html?cb=$(date +%s)"`
+  grep 本次改动的特征符号（沙箱 curl 能通该域名）。
+  `/` 应返回 200；`workers.dev` 返回码 000 属预期（已显式关闭）。
 - git 只能走 SSH；`gh` CLI 在这台机器上不可用。
-- `cloudflare/public/` 是同步产物，已 gitignore，不要手工改。
+- `cloudflare/public/static/`、`cloudflare/public/assets/` 是同步产物，已 gitignore，不要手工改。
