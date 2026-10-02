@@ -78,6 +78,10 @@ def analyze(image_bgr: np.ndarray, merge_lines: bool = True,
 
 # ------------------------------------------------------------------ 编辑参数
 
+# 粗细微调：1 档 = 字号的 0.25%，与前端 web/engine/index.js 的 WEIGHT_STEP 保持一致。
+WEIGHT_STEP = 0.0025
+
+
 def _edit_params(item: dict, edit: dict) -> dict:
     """把前端 edit 对象翻译成 renderer 的入参。"""
     style = item.get("style") or {}
@@ -116,6 +120,8 @@ def _edit_params(item: dict, edit: dict) -> dict:
         "match_stroke": bool(edit.get("match_stroke", True)),
         "auto_family": bool(edit.get("auto_family", True)),
         "shadow": edit.get("shadow") or None,
+        # 人工粗细微调：前端存的是「档位」（整数），这里换算成相对字号的描边偏移
+        "stroke_bias": float(edit.get("weight_bias") or 0) * WEIGHT_STEP,
     }
 
 
@@ -153,7 +159,7 @@ def _dirty(edit: dict, item: dict) -> bool:
                 if list(edit[key]) == list(default):
                     continue
             return True
-    for key in ("italic", "offset_x", "offset_y", "letter_spacing"):
+    for key in ("italic", "offset_x", "offset_y", "letter_spacing", "weight_bias"):
         v = edit.get(key)
         if v not in (None, 0, 0.0, False):
             return True
@@ -260,7 +266,7 @@ def apply_edits(image_bgr: np.ndarray, items: List[dict],
                                                     if k in ("family", "font_size", "fg_color",
                                                              "bold", "italic", "align",
                                                              "offset_x", "offset_y",
-                                                             "letter_spacing")}}
+                                                             "letter_spacing", "weight_bias")}}
         params = _edit_params({"rect": rect, "style": style}, edit)
         params["auto_fit"] = False
         try:

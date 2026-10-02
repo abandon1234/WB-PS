@@ -614,7 +614,7 @@ export function render(cv, fonts, imageBgr, rect, text, style, {
   align = null, valign = 'bottom', offset = [0, 0], letter_spacing = 0.0,
   auto_fit = false, max_width_ratio = 1.15, match_sharpness = true,
   match_stroke = true, auto_family = true, match_source = null, source_text = null,
-  shadow = null,
+  shadow = null, stroke_bias = 0.0,
 } = {}) {
   const warnings = [];
   const lines = String(text).split('\n');
@@ -664,12 +664,23 @@ export function render(cv, fonts, imageBgr, rect, text, style, {
   // 额外描边以「相对字号的比例」保存，缩放字号后仍等比成立
   const strokeRel = [0.0];
 
+  /**
+   * 人工粗细微调：相对字号的描边偏移（正 = 加粗，负 = 变细），0 = 完全自动。
+   *
+   * 关键点：它**不进 build()**，而是在自动笔画校准跑完之后才并进 strokeRel。
+   * 早期版本把它塞进 build()，结果自动闭环测到的笔画里已含人工偏移，于是把
+   * 它当成"误差"反向补偿掉 —— 微调白做，还会吐出"已校准为 X"的错读数。
+   * 并进 strokeRel 之后，后面任何重建（含过宽缩字号）都自动带上它且只叠一次。
+   */
+  const bias = Number(stroke_bias) || 0.0;
+
   const build = (size) => {
     const stroke = Math.max(0.0, strokeRel[0] * size);
     const warn = [];
     let useStroke = stroke;
-    // 字体族没有真正的 Bold 变体时，用轻微描边模拟加粗
-    if (bold && useStroke <= 0) {
+    // 字体族没有真正的 Bold 变体时，用轻微描边模拟加粗。
+    // 但用户明确要求「更细」时不再补这一层，否则微调等于没生效。
+    if (bold && useStroke <= 0 && bias >= 0) {
       useStroke = Math.max(0.4, size * 0.026);
       warn.push('该字体无粗体变体，已用描边模拟加粗');
     }
@@ -688,8 +699,8 @@ export function render(cv, fonts, imageBgr, rect, text, style, {
 
   /* ---- 笔画粗细校准：渲染 → 测笔画 → 补描边 → 再测，闭环收敛 ---- */
   let strokeInfo = {};
+  const targetStroke = Number(style.stroke_width || 0);
   if (match_stroke) {
-    const targetStroke = Number(style.stroke_width || 0);
     if (targetStroke >= 0.8) {
       let probe = layerStrokeWidth(cv, layers[0]);
       if (probe > 0.1) {
@@ -728,7 +739,56 @@ export function render(cv, fonts, imageBgr, rect, text, style, {
     }
   }
 
+  /* ---- 人工粗细微调：并进 strokeRel，再重建 ---- */
+  // 放在自动闭环**之后**：自动那步负责"把字体调到与原图同一量级"，
+  // 微调只负责在结果上再挪一点点。
+  if (bias !== 0.0) {
+    let rel = Math.max(0.0, strokeRel[0] + bias);
+    // 想更细但没有描边可减 → 换更细的字重变体。
+    // canvas 只能向外扩，没法腐蚀笔画，所以"更细"的最后手段就是换字体。
+    if (bias < 0 && rel <= 0) {
+      const thin = fonts.thinnerVariant(family);
+      if (thin && thin !== family) {
+        family = thin;
+        warnings.push(`笔画调细：已切换到更细的字重变体 ${thin}`);
+      } else if (strokeRel[0] <= 0.001) {
+        warnings.push('该字体已是最细字重，无法再变细（可改选更细的字体）');
+      }
+    }
+    strokeRel[0] = rel;               // 并入后不再需要单独处理
+    built = build(font_size);
+    layers = built.lays;
+    warnings.push(...built.warn);
+    if (!layers.length) {
+      return { image: imageBgr.clone(), box: [0, 0, 0, 0], font_size, family, fitted: false, warnings: [...warnings, '文字渲染为空'], stroke: {}, matched: matchedInfo };
+    }
+    {
+      const probe = layerStrokeWidth(cv, layers[0]);
+      strokeInfo = {
+        ...strokeInfo,
+        rendered: Math.round(probe * 100) / 100,
+        stroke_added: Math.round(strokeRel[0] * font_size * 100) / 100,
+        bias: Math.round(bias * 10000) / 10000,
+        family,
+      };
+    }
+  }
+
   let lineGap = pyRound(font_size * 0.22);
+
+  /**
+   * 字号变过之后重测一次笔画，刷新 strokeInfo。
+   * 缩放前测出来的像素值放在缩放后就是错的读数（界面拿它显示"笔画 X→Ypx"）。
+   */
+  const refreshStrokeInfo = () => {
+    if (!layers.length || !Object.keys(strokeInfo).length) return;
+    const probe = layerStrokeWidth(cv, layers[0]);
+    strokeInfo = {
+      ...strokeInfo,
+      rendered: Math.round(probe * 100) / 100,
+      stroke_added: Math.round(strokeRel[0] * font_size * 100) / 100,
+    };
+  };
 
   /**
    * 计算墨迹布局。**必须用墨迹 bbox 而不是图层画布尺寸**：
@@ -761,6 +821,7 @@ export function render(cv, fonts, imageBgr, rect, text, style, {
       ({ inkW, inkH, boxes, origins } = layout(layers));
       fitted = true;
       warnings.push(`新文字比原文宽 ${int((overflow - 1) * 100)}%，已收敛为 ${font_size}px（不低于原字号的 ${int(FIT_FLOOR * 100)}%）`);
+      refreshStrokeInfo();
     }
   } else if (targetW > 0 && overflow > 1.08) {
     warnings.push(`新文字比原文宽约 ${int((overflow - 1) * 100)}%，已保持原字号（如想压回原宽度，可勾选「过宽时缩字号」）`);

@@ -200,6 +200,10 @@ export async function analyze(cv, ocr, fonts, imageBgr, { mergeLines: doMerge = 
 
 /* ------------------------------------------------------------ 编辑参数 */
 
+/** 粗细微调：1 档 = 字号的 0.25%。88px 的字一档约 0.22px 描边，
+ *  与自动笔画校准自身 0.45px 的收敛容差同量级 —— 1 档就是最小的有意义步长。 */
+const WEIGHT_STEP = 0.0025;
+
 /** 把前端 edit 对象翻译成 renderer 的入参 */
 function editParams(item, edit) {
   const style = item.style || {};
@@ -236,6 +240,7 @@ function editParams(item, edit) {
     match_stroke: edit.match_stroke !== false,
     auto_family: edit.auto_family !== false,
     shadow: edit.shadow || null,
+    stroke_bias: (Number(edit.weight_bias) || 0) * WEIGHT_STEP,
   };
 }
 
@@ -267,7 +272,7 @@ function isDirty(edit, item) {
     if (v === def) continue;
     return true;
   }
-  for (const key of ['italic', 'offset_x', 'offset_y', 'letter_spacing']) {
+  for (const key of ['italic', 'offset_x', 'offset_y', 'letter_spacing', 'weight_bias']) {
     const v = edit[key];
     if (v !== null && v !== undefined && v !== 0 && v !== false) return true;
   }
@@ -387,7 +392,7 @@ export function applyEdits(cv, fonts, imageBgr, items, edits, newItems = null) {
 
     const edit = { text, auto_fit: false };
     for (const k of ['family', 'font_size', 'fg_color', 'bold', 'italic', 'align',
-      'offset_x', 'offset_y', 'letter_spacing']) {
+      'offset_x', 'offset_y', 'letter_spacing', 'weight_bias']) {
       if (k in add) edit[k] = add[k];
     }
 

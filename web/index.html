@@ -178,6 +178,21 @@
             <button class="chip" id="chipBold"><b>B</b> 加粗</button>
             <button class="chip" id="chipItalic"><i>I</i> 斜体</button>
           </div>
+          <!-- 粗细微调：加粗只有 0/1 两档，字体本身也可能比原图细一点点。
+               这里以「档」为单位在自动结果上叠一个偏移，逐档约 0.25% 字号
+               —— 约等于自动校准自己用的 0.45px 容差，所以 1 档就是最小的有意义步长。
+               0 档 = 自动，完全沿用原来自动校准的行为。 -->
+          <div class="subfield">
+            <div class="subfield-head">
+              <span>笔画粗细</span>
+              <span class="v" id="vWeight">自动</span>
+              <button class="mini-btn" id="btnWeightReset" title="回到自动：按原图实测笔画反推">归位</button>
+            </div>
+            <input type="range" id="rngWeight" min="-20" max="20" step="1" value="0"
+                   title="向左更细、向右更粗；0 = 自动">
+            <div class="scale-row"><span>细</span><span>自动</span><span>粗</span></div>
+          </div>
+          <div class="hint">加粗 = 换粗体变体；笔画粗细 = 在自动结果上逐档微调（1 档 ≈ 0.25% 字号）</div>
         </div>
 
         <div class="grid2">

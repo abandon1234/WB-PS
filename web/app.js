@@ -316,11 +316,18 @@ function isChanged(id) {
   if (!e) return false;
   if (e.text !== undefined) return true;
   for (const k of ['family', 'fg_color', 'bold', 'italic', 'align', 'letter_spacing',
-                   'offset_x', 'offset_y', 'font_scale', 'erase_method']) {
+                   'offset_x', 'offset_y', 'font_scale', 'erase_method', 'weight_bias']) {
     if (e[k] !== undefined && e[k] !== null && e[k] !== 0 && e[k] !== '' &&
         e[k] !== false && e[k] !== 'auto') return true;
   }
   return false;
+}
+
+/** 粗细微调档位 → 显示文案。0 档代表"自动"，不做任何额外处理。 */
+function weightLabel(step) {
+  const v = Number(step) || 0;
+  if (!v) return '自动';
+  return (v > 0 ? '+' : '') + v + ' 档';
 }
 
 function paintBoxes() {
@@ -442,6 +449,11 @@ function loadEditor(it) {
   $('chipBold').classList.toggle('on', bold);
   $('chipItalic').classList.toggle('on', italic);
 
+  // 粗细微调：0 = 自动（沿用原图笔画反推），非 0 才在渲染时叠加偏移
+  const wb = Number(e.weight_bias) || 0;
+  $('rngWeight').value = wb;
+  $('vWeight').textContent = weightLabel(wb);
+
   const align = e.align || st.align || 'left';
   [...$('segAlign').children].forEach(b => b.classList.toggle('on', b.dataset.v === align));
 
@@ -523,6 +535,8 @@ async function previewItem(id) {
       else if (mi.stage === 'metrics') bits.push('已按字形比例匹配');
       if (res.info.family && mi.stage) bits.push(res.info.family);
       if (si.target) bits.push(`笔画 ${si.rendered}→${si.target}px`);
+      const wb = Number(S.edits[id]?.weight_bias) || 0;
+      if (wb) bits.push(`粗细 ${weightLabel(wb)}`);
       $('fontHint').textContent = bits.join(' · ');
     }
   }
@@ -1048,6 +1062,19 @@ $('chipItalic').addEventListener('click', (e) => {
   const on = !e.currentTarget.classList.contains('on');
   e.currentTarget.classList.toggle('on', on);
   setEdit(S.sel, { italic: on });
+});
+/* 粗细微调：档位直接存进 edit.weight_bias，渲染时由引擎换算成描边偏移。
+   拖回 0 档等于恢复自动，edit 里该字段归零后会被 isChanged 判为"未改动"。 */
+$('rngWeight').addEventListener('input', (e) => {
+  const v = +e.target.value;
+  $('vWeight').textContent = weightLabel(v);
+  setEdit(S.sel, { weight_bias: v });
+});
+$('btnWeightReset').addEventListener('click', () => {
+  if (S.sel === null) return;
+  $('rngWeight').value = 0;
+  $('vWeight').textContent = weightLabel(0);
+  setEdit(S.sel, { weight_bias: 0 });
 });
 [...$('segAlign').children].forEach(b => b.addEventListener('click', () => {
   [...$('segAlign').children].forEach(x => x.classList.toggle('on', x === b));

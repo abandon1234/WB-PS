@@ -579,7 +579,8 @@ def render(image_bgr: np.ndarray, rect: dict, text: str, style: dict,
            auto_family: bool = True,
            match_source: Optional[np.ndarray] = None,
            source_text: Optional[str] = None,
-           shadow: Optional[dict] = None) -> RenderResult:
+           shadow: Optional[dict] = None,
+           stroke_bias: float = 0.0) -> RenderResult:
     """在原位置绘制新文字。
 
     Args:
@@ -606,6 +607,9 @@ def render(image_bgr: np.ndarray, rect: dict, text: str, style: dict,
         auto_family:     是否按字形自动匹配字体族。
         match_source:    未擦除的原图，用于按真实字形轮廓匹配字体。
         source_text:     原文字，作为字形匹配的模板。
+        stroke_bias:     人工粗细微调，相对字号的描边偏移（正 = 加粗，负 = 变细）。
+                         叠加在 match_stroke 的自动校准结果之上；0 = 完全自动。
+                         前端「笔画粗细」滑块的每一档 = 0.005。
     """
     warnings: List[str] = []
     lines = str(text).split("\n")
@@ -665,14 +669,22 @@ def render(image_bgr: np.ndarray, rect: dict, text: str, style: dict,
 
     # 额外描边量以「相对字号的比例」保存，这样自动缩放字号后仍等比成立
     stroke_rel = [0.0]
+    # 人工粗细微调：相对字号的描边偏移（正 = 加粗，负 = 变细），0 = 完全自动。
+    #
+    # 关键点：它**不进 build()**，而是等自动笔画校准跑完才并进 stroke_rel。
+    # 早期版本把它塞进 build()，自动闭环测到的笔画里就含了人工偏移，于是把它
+    # 当成"误差"反向补偿掉 —— 微调白做，还会吐出"已校准为 X"的错读数。
+    # 并进 stroke_rel 之后，后续任何重建（含过宽缩字号）都自动带上它且只叠一次。
+    bias = float(stroke_bias or 0.0)
 
     def build(size: int):
         face = fonts.resolve(family, bool(bold), italic)
         f, path, index = _load_face(family, size, bool(bold), italic)
         stroke = max(0.0, stroke_rel[0] * size)
         warn: List[str] = []
-        # 字体族没有真正的 Bold 变体时，用轻微描边模拟加粗
-        if bold and face is not None and not face.is_bold and stroke <= 0:
+        # 字体族没有真正的 Bold 变体时，用轻微描边模拟加粗。
+        # 但用户明确要求「更细」时不再补这一层，否则微调等于没生效。
+        if bold and face is not None and not face.is_bold and stroke <= 0 and bias >= 0:
             stroke = max(0.4, size * 0.026)
             warn.append("该字体无粗体变体，已用描边模拟加粗")
         lays = [_draw_text_layer(ln, f, path, index, fg_rgb, bool(bold), italic,
@@ -688,8 +700,8 @@ def render(image_bgr: np.ndarray, rect: dict, text: str, style: dict,
     # 字重档位（regular/medium/bold）只能"猜"，字体本身也可能比原图细。
     # 这里直接拿原图实测的笔画宽度做闭环：渲染 → 测笔画 → 补描边 → 再测，迭代收敛。
     stroke_info: dict = {}
+    target_stroke = float(style.get("stroke_width") or 0.0)
     if match_stroke:
-        target_stroke = float(style.get("stroke_width") or 0.0)
         if target_stroke >= 0.8:
             probe = _layer_stroke_width(layers[0])
             if probe > 0.1:
@@ -721,7 +733,48 @@ def render(image_bgr: np.ndarray, rect: dict, text: str, style: dict,
                     warnings.append(
                         f"笔画宽度已校准：原图 {target_stroke:.1f}px → 渲染 {probe:.1f}px")
 
+    # ---- 人工粗细微调：并进 stroke_rel，再重建 ----
+    # 放在自动闭环**之后**：自动那步负责"把字体调到与原图同一量级"，
+    # 微调只负责在结果上再挪一点点。
+    if bias != 0.0:
+        rel = max(0.0, stroke_rel[0] + bias)
+        # 想更细但没有描边可减 → 换更细的字重变体。
+        # PIL 的 stroke_width 只能向外扩，没法腐蚀笔画，"更细"的最后手段是换字体。
+        if bias < 0 and rel <= 0:
+            thin = _thinner_variant(family, bool(italic))
+            if thin and thin != family:
+                family = thin
+                warnings.append(f"笔画调细：已切换到更细的字重变体 {thin}")
+            elif stroke_rel[0] <= 0.001:
+                warnings.append("该字体已是最细字重，无法再变细（可改选更细的字体）")
+        stroke_rel[0] = rel               # 并入后不再需要单独处理
+        layers, warns = build(font_size)
+        warnings.extend(warns)
+        if layers:
+            probe = _layer_stroke_width(layers[0])
+            merged = dict(stroke_info)
+            merged.update({
+                "rendered": round(probe, 2),
+                "stroke_added": round(stroke_rel[0] * font_size, 2),
+                "bias": round(bias, 4),
+                "family": family,
+            })
+            stroke_info = merged
+
     line_gap = int(round(font_size * 0.22))
+
+    def refresh_stroke_info() -> None:
+        """字号变过之后重测一次笔画，刷新 stroke_info。
+
+        缩放前测出的像素值放在缩放后就是错的读数（界面拿它显示"笔画 X→Ypx"）。
+        """
+        nonlocal stroke_info
+        if not layers or not stroke_info:
+            return
+        probe = _layer_stroke_width(layers[0])
+        stroke_info = dict(stroke_info)
+        stroke_info["rendered"] = round(probe, 2)
+        stroke_info["stroke_added"] = round(stroke_rel[0] * font_size, 2)
 
     def layout(ls: List[Image.Image]):
         """计算墨迹布局：(总墨迹宽, 总墨迹高, 各行墨迹bbox, 各行图层原点y)。
@@ -760,6 +813,7 @@ def render(image_bgr: np.ndarray, rect: dict, text: str, style: dict,
             warnings.append(
                 f"新文字比原文宽 {int((overflow - 1) * 100)}%，"
                 f"已收敛为 {font_size}px（不低于原字号的 {int(FIT_FLOOR * 100)}%）")
+            refresh_stroke_info()
     elif target_w > 0 and overflow > 1.08:
         warnings.append(
             f"新文字比原文宽约 {int((overflow - 1) * 100)}%，已保持原字号"
