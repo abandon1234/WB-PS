@@ -25,5 +25,14 @@
 
 ## 工作流约定
 
+- **改 `web/` 只是本地生效**：线上（Cloudflare）跑的是 `cloudflare/public/static/`，
+  必须 `cd cloudflare && node scripts/sync-assets.mjs`（= `npm run sync:assets`）同步过去，
+  再 `npx wrangler deploy` 才会上线。忘了同步 = 线上看不到改动（踩过一次）。
+- 同步脚本会 `rm -rf public` 后重建，所以**不要加 `--no-assets`**：那样会连 39MB 的
+  `/assets/` 一起删掉且不补回。全量同步约几秒。
+- 改了 `web/` 下的页面或脚本，顺手把 `web/index.html` 里的 `?v=` 版本号 +0.1：
+  `/static/*` 走静态资源层，版本号是防浏览器缓存读到旧脚本的唯一手段（`/assets/*`
+  才有 immutable 头，页面脚本没有）。
 - 每轮改动结束就 `git commit`；`git push` 之前必须先问用户（见 README 版本管理）。
 - git 只能走 SSH；`gh` CLI 在这台机器上不可用。
+- `cloudflare/public/` 是同步产物，已 gitignore，不要手工改。

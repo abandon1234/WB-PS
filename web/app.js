@@ -317,6 +317,8 @@ function isChanged(id) {
   if (e.text !== undefined) return true;
   for (const k of ['family', 'fg_color', 'bold', 'italic', 'align', 'letter_spacing',
                    'offset_x', 'offset_y', 'font_scale', 'erase_method', 'weight_bias']) {
+    // 字号 100% 与"自动"等价：滑块拖回 100 时不该把这项算成改动
+    if (k === 'font_scale' && e[k] === 1) continue;
     if (e[k] !== undefined && e[k] !== null && e[k] !== 0 && e[k] !== '' &&
         e[k] !== false && e[k] !== 'auto') return true;
   }
@@ -1048,11 +1050,59 @@ $('selFont').addEventListener('change', (e) => {
    本机字体常有 200+ 项，靠原生 select 找字太难了。 */
 $('fontFilter')?.addEventListener('input', debounce(rebuildFontSelect, 120));
 $('inpColor').addEventListener('input', (e) => setEdit(S.sel, { fg_color: hex2rgb(e.target.value) }));
-$('rngSize').addEventListener('input', (e) => {
-  const v = +e.target.value;
-  $('vSize').textContent = v + '%';
-  setEdit(S.sel, { font_scale: v / 100 });
-});
+
+/* ---- 字号 / 笔画粗细：滑块（拖）+ 左右 ± 按钮（点）---------------
+   拖滑块很难精确停在"就差 1%"上，所以两项都配一对 ± ：点一下动一档，
+   按住不放连续动。两者走同一个 applyXxx，保证读数、edit 字段不会走岔。 */
+
+/** 按住不放连续触发（先立即动一次，400ms 后转入每 60ms 一次）。 */
+function holdRepeat(btn, fn) {
+  if (!btn) return;
+  let delay = null, timer = null;
+  const stop = () => { clearTimeout(delay); clearInterval(timer); delay = timer = null; };
+  const start = (ev) => {
+    if (ev) ev.preventDefault();         // 别让按钮抢焦点，免得画布快捷键失效
+    stop();
+    fn();
+    delay = setTimeout(() => { timer = setInterval(fn, 60); }, 400);
+  };
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('mouseup', stop);
+  btn.addEventListener('mouseleave', stop);
+  btn.addEventListener('touchstart', start, { passive: false });
+  btn.addEventListener('touchend', stop);
+  btn.addEventListener('touchcancel', stop);
+  // 键盘（Enter/Space）触发的 click 没有 mousedown，补一次
+  btn.addEventListener('click', (ev) => { if (ev.detail === 0) fn(); });
+  btn.addEventListener('contextmenu', (ev) => ev.preventDefault());
+}
+
+/** 夹到滑块自己的 min/max，四舍五入到整数档 */
+function clampToSlider(el, v) {
+  return Math.round(Math.min(+el.max, Math.max(+el.min, v)));
+}
+
+function applySize(v) {
+  if (S.sel === null) return;
+  const el = $('rngSize');
+  const n = clampToSlider(el, v);
+  el.value = n;
+  $('vSize').textContent = n + '%';
+  setEdit(S.sel, { font_scale: n / 100 });
+}
+
+function applyWeight(step) {
+  if (S.sel === null) return;
+  const el = $('rngWeight');
+  const n = clampToSlider(el, step);
+  el.value = n;
+  $('vWeight').textContent = weightLabel(n);
+  setEdit(S.sel, { weight_bias: n });
+}
+
+$('rngSize').addEventListener('input', (e) => applySize(+e.target.value));
+holdRepeat($('btnSizeDown'), () => applySize((+$('rngSize').value || 100) - 1));
+holdRepeat($('btnSizeUp'), () => applySize((+$('rngSize').value || 100) + 1));
 $('chipBold').addEventListener('click', (e) => {
   const on = !e.currentTarget.classList.contains('on');
   e.currentTarget.classList.toggle('on', on);
@@ -1065,17 +1115,10 @@ $('chipItalic').addEventListener('click', (e) => {
 });
 /* 粗细微调：档位直接存进 edit.weight_bias，渲染时由引擎换算成描边偏移。
    拖回 0 档等于恢复自动，edit 里该字段归零后会被 isChanged 判为"未改动"。 */
-$('rngWeight').addEventListener('input', (e) => {
-  const v = +e.target.value;
-  $('vWeight').textContent = weightLabel(v);
-  setEdit(S.sel, { weight_bias: v });
-});
-$('btnWeightReset').addEventListener('click', () => {
-  if (S.sel === null) return;
-  $('rngWeight').value = 0;
-  $('vWeight').textContent = weightLabel(0);
-  setEdit(S.sel, { weight_bias: 0 });
-});
+$('rngWeight').addEventListener('input', (e) => applyWeight(+e.target.value));
+holdRepeat($('btnWeightDown'), () => applyWeight((+$('rngWeight').value || 0) - 1));
+holdRepeat($('btnWeightUp'), () => applyWeight((+$('rngWeight').value || 0) + 1));
+$('btnWeightReset').addEventListener('click', () => applyWeight(0));
 [...$('segAlign').children].forEach(b => b.addEventListener('click', () => {
   [...$('segAlign').children].forEach(x => x.classList.toggle('on', x === b));
   setEdit(S.sel, { align: b.dataset.v });

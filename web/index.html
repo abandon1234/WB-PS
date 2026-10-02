@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图片工具 · 无痕改字 &amp; 图像生成</title>
-<link rel="stylesheet" href="/static/shell.css?v=3.4">
-<link rel="stylesheet" href="/static/style.css?v=3.4">
-<link rel="stylesheet" href="/static/image.css?v=3.4">
+<link rel="stylesheet" href="/static/shell.css?v=3.5">
+<link rel="stylesheet" href="/static/style.css?v=3.5">
+<link rel="stylesheet" href="/static/image.css?v=3.5">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%237ee04a'/><text x='50' y='72' font-size='62' text-anchor='middle' fill='%230a1503' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
@@ -160,7 +160,12 @@
         <div class="grid2">
           <div class="field">
             <label>字号 <span class="v" id="vSize">自动</span></label>
-            <input type="range" id="rngSize" min="50" max="200" value="100" step="1">
+            <!-- 左右各一个 ± 按钮：拖滑块很难停在"就差 1%"上，点按更可控 -->
+            <div class="step-row">
+              <button class="step-btn" id="btnSizeDown" title="减小 1%（按住连续减）" aria-label="减小字号">−</button>
+              <input type="range" id="rngSize" min="50" max="200" value="100" step="1">
+              <button class="step-btn" id="btnSizeUp" title="增大 1%（按住连续加）" aria-label="增大字号">+</button>
+            </div>
             <div class="hint">自动 = 按原文字墨迹高度反推</div>
           </div>
           <div class="field">
@@ -188,8 +193,12 @@
               <span class="v" id="vWeight">自动</span>
               <button class="mini-btn" id="btnWeightReset" title="回到自动：按原图实测笔画反推">归位</button>
             </div>
-            <input type="range" id="rngWeight" min="-20" max="20" step="1" value="0"
-                   title="向左更细、向右更粗；0 = 自动">
+            <div class="step-row">
+              <button class="step-btn" id="btnWeightDown" title="细 1 档（按住连续减）" aria-label="更细">−</button>
+              <input type="range" id="rngWeight" min="-20" max="20" step="1" value="0"
+                     title="向左更细、向右更粗；0 = 自动">
+              <button class="step-btn" id="btnWeightUp" title="粗 1 档（按住连续加）" aria-label="更粗">+</button>
+            </div>
             <div class="scale-row"><span>细</span><span>自动</span><span>粗</span></div>
           </div>
           <div class="hint">加粗 = 换粗体变体；笔画粗细 = 在自动结果上逐档微调（1 档 ≈ 0.25% 字号）</div>
@@ -473,15 +482,15 @@
 </main>
 </div>
 
-<script src="/static/store.js?v=3.4"></script>
-<script src="/static/shell.js?v=3.4"></script>
-<script src="/static/workspace.js?v=3.4"></script>
-<script src="/static/app.js?v=3.4"></script>
-<script src="/static/toolcache.js?v=3.4"></script>
-<script src="/static/image.js?v=3.4"></script>
+<script src="/static/store.js?v=3.5"></script>
+<script src="/static/shell.js?v=3.5"></script>
+<script src="/static/workspace.js?v=3.5"></script>
+<script src="/static/app.js?v=3.5"></script>
+<script src="/static/toolcache.js?v=3.5"></script>
+<script src="/static/image.js?v=3.5"></script>
 <!-- 浏览器本地引擎（模型缓存在浏览器，网页直接调用本地缓存推理）。
      module 默认延迟执行，会排在上面几个普通脚本之后。 -->
-<script type="module" src="/static/engine/boot.js?v=3.4"></script>
+<script type="module" src="/static/engine/boot.js?v=3.5"></script>
 
 <!-- ======================= 生成视图的浮层（弹层 / 灯箱 / toast） ======================= -->
 <div class="pop-wrap" id="popWrap" hidden></div>
