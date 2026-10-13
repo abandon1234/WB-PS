@@ -28,3 +28,6 @@ node_modules/
 # WorkBuddy 工作区数据：只留会话记录，其余（临时备份等）不入库
 .workbuddy/*
 !.workbuddy/memory/
+
+# 抹字调试产物（测台导出的输入/输出图）
+tools/.dbg-out/

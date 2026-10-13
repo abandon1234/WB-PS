@@ -608,6 +608,104 @@ try {
   check('打码 · 导出的 JPEG 不含 APP1(Exif) 段（canvas 重编码天然抹掉元信息）',
     exif.app1 === false && exif.bytes > 500, `${exif.bytes} bytes · app1=${exif.app1}`);
 
+  console.log('\n[2j] 抹字：纯色底的擦净质量（刻意喂一张"已经有残影"的输入）');
+  // 现造一张账单式的图：一条超长数字串（必被"长数字串"规则命中）+ 上下两行
+  // 只作对照的文字 + 一串**淡灰短划**当"上一轮没擦净留下的残影"。
+  // 断言的是不变量而不是某个实现：目标行连同它的邻接空白带里不许有任何残留，
+  // 而框外的对照文字一个像素都不许动。旧的"外圈中位数取色"一旦被灰像素带偏，
+  // 这里会填出一块灰面 —— 框内灰度极差立刻超标。
+  await cdp.evaluate(`(async () => {
+    const cv = document.createElement('canvas');
+    cv.width = 660; cv.height = 260;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 660, 260);
+    ctx.fillStyle = '#333'; ctx.font = '20px sans-serif';
+    ctx.fillText('收款方示例商户', 30, 66);
+    ctx.fillText('备注本行仅作对照', 30, 216);
+    ctx.font = '20px monospace';
+    ctx.fillStyle = '#222';
+    ctx.fillText('131307010252000052610010735829', 30, 146);
+    ctx.fillStyle = '#ececec';
+    const dash = [14, 9, 31, 17, 6, 25, 40, 12, 22, 8, 35, 19, 11, 28];
+    let x = 32;
+    for (let i = 0; i < dash.length; i++) {
+      ctx.fillRect(x, 136 + (i % 4) * 3, dash[i], 2);
+      x += dash[i] + 6;
+    }
+    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+    window.__dbgIn = cv.toDataURL('image/png');   // 诊断：把真实输入图带出来
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'erase_card.png', { type: 'image/png' }));
+    const inp = document.getElementById('maskInput');
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await cdp.waitFor('(() => { const M = window.WBText.mask;'
+    + ' return !!(M.lines && !M.busy); })()', 90000, '抹字用例识别完成');
+  await sleep(400);
+  await cdp.evaluate("document.querySelector('.tw-mbtn[data-m=\"erase\"]').click()");
+  await cdp.waitFor('!!window.WBText.mask.eraseImg', 120000, '抹字结果就绪');
+  await sleep(300);
+
+  try {
+    const inUrl = await cdp.evaluate('window.__dbgIn || ""');
+    if (inUrl && String(inUrl).indexOf(',') > 0) {
+      const dir = path.resolve('tools/.dbg-out');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'erase_card_in.png'),
+        Buffer.from(String(inUrl).split(',')[1], 'base64'));
+      console.log('      已保存输入图 tools/.dbg-out/erase_card_in.png');
+    }
+  } catch (e) { console.log('      保存输入图失败:', e.message); }
+
+  const erMeta = await cdp.evaluate(`(() => {
+    const M = window.WBText.mask;
+    return { levels: M.levels, inks: M.inks, masks: M.masks, resids: M.resids,
+      sweep: M.swept, methods: M.methods };
+  })()`);
+  console.log('      引擎 meta:', JSON.stringify(erMeta));
+
+  const er2 = await cdp.evaluate(`(() => {
+    const M = window.WBText.mask;
+    const hit = M.hits.find((h) => h.label === '长数字串');
+    if (!hit) return { found: false, labels: M.hits.map((h) => h.label).join(',') };
+    const r = hit.rect;
+    // 目标行内缩 1/4 取样：避开 OCR 框边缘，只问"原来有字/有残影的地方干净了没"
+    const inner = window.WBText.eraseBox(r.x + r.w * 0.25, r.y + r.h * 0.25,
+      r.w * 0.5, r.h * 0.5);
+    // 引擎实际拿到的框是 OCR 框外扩 2px（toRects 的 pad），残留度量按那个框算
+    const whole = window.WBText.eraseBox(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
+    const up = window.WBText.eraseBox(r.x, Math.max(0, r.y - 10), r.w, 6);
+    const dn = window.WBText.eraseBox(r.x, r.y + r.h + 4, r.w, 6);
+    const c1 = window.WBText.eraseBox(26, 46, 220, 28);
+    const c2 = window.WBText.eraseBox(26, 196, 220, 28);
+    return {
+      found: true, on: hit.on !== false, labels: M.hits.map((h) => h.label).join(','),
+      rect: [r.x, r.y, r.w, r.h], inner, whole, up, dn, c1, c2,
+      peaks: M.peaks, worst: M.worst,
+      stats: document.getElementById('maskStats').textContent,
+    };
+  })()`);
+  console.log(`      靶子框 ${er2.rect ? JSON.stringify(er2.rect) : '-'} · peak=${JSON.stringify(er2.peaks)}`
+    + ` · 全框=${JSON.stringify(er2.whole)} · ${er2.stats}`);
+  check('抹字 · 超长数字串被识别为命中（本例的靶子）',
+    er2.found && er2.on === true, er2.labels);
+  check('抹字 · 目标行（含预先掺入的淡灰残影）擦净且底色一致 —— 框内极差 ≤ 3',
+    er2.found && er2.inner && er2.inner.min >= 252
+      && (er2.inner.max - er2.inner.min) <= 3, JSON.stringify(er2.inner));
+  check('抹字 · 目标行上下邻接的空白带也没有被带出的灰',
+    er2.found && er2.up && er2.dn && er2.up.min >= 252 && er2.dn.min >= 252,
+    er2.found ? `${JSON.stringify(er2.up)} / ${JSON.stringify(er2.dn)}` : '未命中');
+  check('抹字 · 框外的上下两行对照文字一个像素都没被碰',
+    er2.found && er2.c1 && er2.c2 && er2.c1.min < 90 && er2.c2.min < 90,
+    er2.found ? `${JSON.stringify(er2.c1)} / ${JSON.stringify(er2.c2)}` : '未命中');
+  check('抹字 · 逐块残留度量都在阈值内（界面上不会出现"没擦净"告警）',
+    er2.found && (er2.peaks || []).every((v) => v === null || v <= 16),
+    JSON.stringify(er2.peaks));
+  check('抹字 · 状态条如实报"已擦净"',
+    er2.found && String(er2.stats).indexOf('抹字已擦净') >= 0, er2.stats);
+
   console.log('\n[2i] 翻译：analyze → 上游翻译 → 复用 applyEdits 原位重绘');
   await cdp.evaluate(`document.querySelector('.tw-tab[data-mode="translate"]').click()`);
   await cdp.waitFor("(() => { const p = document.getElementById('viewTextTranslate');"

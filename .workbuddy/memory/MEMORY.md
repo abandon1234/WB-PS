@@ -65,6 +65,20 @@
 - 打码的遮盖：色块 / 马赛克 / 模糊是**前端 canvas 直接画**（实时预览，不走引擎）；
   只有「抹字」走引擎。预览与导出共用 `drawMasks()`，别写第二份绘制代码。
 
+## 浏览器侧引擎的硬约束（踩过大坑）
+
+- **多通道 Mat 一律 `ptr(row)`，绝不用 `.data` 平铺下标**。`crop`/`clone` 出来的 BGR Mat
+  实测 `isContinuous() === false`，但 `data.length` 恰好等于 `rows×cols×channels` ——
+  平铺读写**不报错、看着有值、整体错位**。踩到的后果：`fillPatch` 没真刷上、
+  `sweepResidue` 没真写、输出图却因为粘贴也用同一套错位读法而**看着干净**，
+  只有度量（走 `cvtColor`）如实报残留。判据：**单通道且连续的掩膜可平铺；
+  只要是多通道，就必须 `ptr(row)`**。（`cvutil.planeData` 的注释早有警告，但只覆盖了读。）
+- 排查引擎算法的**首选工具**是 `tools/dbg_erase_harness.mjs`：直接调
+  `/api/text/erase` 跳过 OCR，几秒一轮，产物落 `tools/.dbg-out/`（gitignore）。
+  再配 `tools/dbg_diff_js_py.py` 与 Python 同构实现**逐像素对拍**，要求 `maxΔ = 0`。
+  比跑全量 `probe_views.mjs`（约 4 分钟）快一个数量级。
+- 双端一致性不需要"猜"：dump 出真实输入图 → Python 跑同构实现 → 逐像素对拍即可判定。
+
 ## 渲染口径约定
 
 - 描边量以**相对字号的比例**（stroke_rel）保存，字号缩放后等比成立。

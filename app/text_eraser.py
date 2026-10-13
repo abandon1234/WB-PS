@@ -22,6 +22,31 @@ import numpy as np
 
 from .style_analyzer import _estimate_bg_level, _keep_components, _text_mask
 
+# 「算不算背景」的灰度容差，同时是残影清扫的判断阈值
+_BG_TOL = 12
+# 归属背景主峰簇的灰度窗口
+_BG_WINDOW = 10
+# 取参考背景时向外扩多少像素（只取框外那圈，框里的字不参与估计）
+_BG_PAD = 5
+# 参考背景里落在主峰簇内的比例下限，低于它就不认这是纯色底
+_BG_SHARE = 0.80
+# 掩膜外圈自己落在主峰簇内的比例下限，低于它就改用 ROI 级兜底色
+_RING_SHARE = 0.70
+# 残影清扫范围：原文字掩膜（已含 grow）再外扩这么多像素
+_SWEEP_GROW = 5
+
+
+def _hist_mode(hist: np.ndarray, window: int = 9) -> int:
+    """直方图主峰（带窗口平滑），与 web/engine/num.js 的 histMode 同口径。"""
+    half = window >> 1
+    best, best_val = 0, -1.0
+    for i in range(256):
+        lo, hi = max(0, i - half), min(255, i + half)
+        v = float(hist[lo:hi + 1].mean()) if hi >= lo else 0.0
+        if v > best_val:
+            best_val, best = v, i
+    return best
+
 
 def _mask_in_roi(roi_bgr: np.ndarray, rect: dict, roi_xy: Tuple[int, int],
                  grow: int = 2, bg_level: Optional[float] = None) -> np.ndarray:
@@ -47,6 +72,169 @@ def _mask_in_roi(roi_bgr: np.ndarray, rect: dict, roi_xy: Tuple[int, int],
         x0, y0 = max(0, rx), max(0, ry)
         m[y0:y0 + int(rect["h"]), x0:x0 + int(rect["w"])] = 255
     return m
+
+
+# ------------------------------------------------------- 背景体检与残影清扫
+
+def _cluster_mean(px: np.ndarray, lum: np.ndarray, mode: int,
+                  fallback: np.ndarray) -> np.ndarray:
+    """主峰附近那一小簇像素的均值颜色。
+
+    先收 ±2 的**紧簇**：纯色底的像素值本来就集中在主峰上，紧簇的均值几乎等于
+    真实底色。用 ±_BG_WINDOW 那种宽簇会把 245 这类边上像素一起平均进去，
+    填出来比周围背景低一两个灰阶 —— 单看不出来，但整块是个"比周围略暗的平面"，
+    恰恰是最容易被看出动过手脚的形态。
+    """
+    for win in (2, _BG_WINDOW):
+        sel = np.abs(lum - mode) <= win
+        if int(sel.sum()) >= 12:
+            return px[sel].mean(axis=0)
+    return fallback
+
+
+def _ring_bg_color(roi: np.ndarray, m: np.ndarray,
+                   fallback: np.ndarray) -> np.ndarray:
+    """掩膜外圈真实像素估出的背景色。
+
+    关键是取**主峰所在簇的均值**，不是外圈的中位数：外圈紧贴字形，常常混进
+    抗锯齿的灰边，中位数被那些灰像素一拖就偏灰，整块填出来是一条淡灰带 ——
+    「字没了、但留一片灰影」最常见的来源就是它。先找主峰、再只对落在主峰附近的
+    像素求均值，抗干扰从「容忍一半污染」变成「只要污染是少数派就没事」。
+
+    还要再验一道「外圈自己像不像背景」：主峰簇占比不到七成，说明这一圈大半
+    是墨（框紧贴邻行的字时就是这样），这时不能拿它当底色，退回 ROI 级估计。
+    """
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    ring = cv2.subtract(cv2.dilate(m, k), m)
+    idx = np.nonzero(ring.ravel())[0]
+    if idx.size < 12:
+        return fallback
+
+    px = roi.reshape(-1, 3)[idx].astype(np.float32)
+    lum = px @ np.array([0.114, 0.587, 0.299], dtype=np.float32)
+    hist = np.bincount(np.clip(np.round(lum), 0, 255).astype(np.int32), minlength=256)
+    mode = _hist_mode(hist, 9)
+
+    lo, hi = max(0, mode - _BG_WINDOW), min(255, mode + _BG_WINDOW)
+    if float(hist[lo:hi + 1].sum()) / px.shape[0] < _RING_SHARE:
+        return fallback
+    return _cluster_mean(px, lum, mode, fallback)
+
+
+def _roi_bg_color(gray_roi: np.ndarray, roi_bgr: np.ndarray,
+                  fallback: np.ndarray) -> np.ndarray:
+    """全 ROI 级别的背景色。
+
+    ROI 的高度是框的三倍上下，里面绝大多数像素是背景，所以主峰簇的均值就是这
+    一块的底色。它是「外圈样本不可信」时的兜底 —— 尤其是「框里一个字都没抓到、
+    退化成整框填充」那种情况：那时紧贴框外的那圈很可能正压在邻行的字上，
+    用它取色会把整框刷成灰色。实拍见过这个灰带，所以这里必须有一层兜底。
+    """
+    gray = gray_roi.ravel()
+    level = _hist_mode(np.bincount(gray, minlength=256).astype(np.float64), 9)
+    return _cluster_mean(roi_bgr.reshape(-1, 3).astype(np.float32),
+                         gray.astype(np.float32), level, fallback)
+
+
+def _box_probe(gray_roi: np.ndarray, rect: dict,
+               roi_xy: Tuple[int, int]) -> dict:
+    """背景体检：底色主峰在哪儿、纯不纯、框里有多少墨。
+
+    关键是用**框外那一圈**当参考，而不是框内：OCR 的框常常紧贴字形，框里
+    大半都是笔画，用框内统计去判"底色纯不纯"会被墨自己带偏（实测紧框的
+    密排中文框内背景占比只有 0.43，看着像纹理底）。框外那圈基本只有背景，
+    用它算主峰和占比才稳。
+
+    只有纯色底才敢做残影清扫 —— 有纹理或渐变的底子强行归一化会擦出一块假平面。
+    """
+    H, W = gray_roi.shape[:2]
+    bx0 = int(np.clip(int(rect["x"]) - roi_xy[0], 0, max(0, W - 1)))
+    by0 = int(np.clip(int(rect["y"]) - roi_xy[1], 0, max(0, H - 1)))
+    bx1 = int(np.clip(bx0 + max(1, int(rect["w"])), 1, W))
+    by1 = int(np.clip(by0 + max(1, int(rect["h"])), 1, H))
+
+    rx0, ry0 = max(0, bx0 - _BG_PAD), max(0, by0 - _BG_PAD)
+    rx1, ry1 = min(W, bx1 + _BG_PAD), min(H, by1 + _BG_PAD)
+    outer = gray_roi[ry0:ry1, rx0:rx1]
+
+    in_box = np.zeros(outer.shape, bool)
+    in_box[by0 - ry0:by1 - ry0, bx0 - rx0:bx1 - rx0] = True
+
+    box_hist = np.bincount(outer[in_box].ravel(), minlength=256).astype(np.float64)
+    ring_hist = np.bincount(outer[~in_box].ravel(), minlength=256).astype(np.float64)
+    box_n, ring_n = int(box_hist.sum()), int(ring_hist.sum())
+
+    # 参考区太小就退回框内统计：宁可不清扫，也不要拿噪声当判据
+    use_ring = ring_n >= 40
+    ref_hist = ring_hist if use_ring else box_hist
+    ref_n = ring_n if use_ring else box_n
+    level = _hist_mode(ref_hist, 9)
+
+    lo, hi = max(0, level - _BG_WINDOW), min(255, level + _BG_WINDOW)
+    near = float(ref_hist[lo:hi + 1].sum())
+    ink = float(box_hist[np.abs(np.arange(256) - level) > _BG_TOL].sum())
+
+    return {"level": level, "ring_n": ring_n,
+            "bg_share": (near / ref_n) if ref_n else 0.0,
+            "ink_ratio": (ink / box_n) if box_n else 0.0,
+            "solid": bool(use_ring and ref_n and near / ref_n >= _BG_SHARE)}
+
+
+def _sweep_reach(m: np.ndarray, rect: dict, roi_xy: Tuple[int, int]) -> dict:
+    """清扫范围：原文字掩膜外扩 _SWEEP_GROW、且不出框。"""
+    H, W = m.shape[:2]
+    x0 = int(np.clip(int(rect["x"]) - roi_xy[0], 0, max(0, W - 1)))
+    y0 = int(np.clip(int(rect["y"]) - roi_xy[1], 0, max(0, H - 1)))
+    x1 = int(np.clip(x0 + max(1, int(rect["w"])), 1, W))
+    y1 = int(np.clip(y0 + max(1, int(rect["h"])), 1, H))
+
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                  (_SWEEP_GROW * 2 + 1, _SWEEP_GROW * 2 + 1))
+    reach = cv2.dilate(m, k)
+    return {"flags": reach[y0:y1, x0:x1] > 0, "x0": x0, "y0": y0,
+            "w": x1 - x0, "h": y1 - y0}
+
+
+def _sweep_residue(patched: np.ndarray, m: np.ndarray, rect: dict,
+                   roi_xy: Tuple[int, int], level: int,
+                   paint_bgr: np.ndarray, tol: int) -> int:
+    """残影清扫：在清扫范围内把偏离背景超过 tol 的像素直接归到背景色。
+
+    why: _text_mask 在低对比度、被缩放过的截图上往往只抓得住笔画核心，
+    抗锯齿那一圈灰边会漏在掩膜之外 —— 擦完就是「字没了、却留着一片灰影」。
+    补上这层之后，纯色底上的抹字不可能再留残影：范围内只要不是背景色，一律归位。
+
+    范围限制在掩膜外扩 _SWEEP_GROW 之内、且不出框，理由是 OCR 行框常常比字高，
+    用整个框会把框里"离目标文字很远"的东西（比如邻行的字头）一起抹掉。
+
+    刻意不做的一件事：保护恰好压在范围内的表格线。试过按"横贯整行"识别它，
+    但判据做不到既可靠又不留残影 —— 而留残影正是这里要修的问题，
+    所以取舍是：宁可少一道线，也不要留一片灰。
+    """
+    r = _sweep_reach(m, rect, roi_xy)
+    flags, x0, y0, bw, bh = r["flags"], r["x0"], r["y0"], r["w"], r["h"]
+
+    gray = cv2.cvtColor(patched, cv2.COLOR_BGR2GRAY)
+    region = gray[y0:y0 + bh, x0:x0 + bw]
+    hit = flags & (np.abs(region.astype(np.int16) - level) > tol)
+    if not hit.any():
+        return 0
+
+    n = int(hit.sum())
+    patched[y0:y0 + bh, x0:x0 + bw][hit] = np.clip(
+        np.round(paint_bgr), 0, 255).astype(np.uint8)
+    return n
+
+
+def _residue_peak(patched: np.ndarray, m: np.ndarray, rect: dict,
+                  roi_xy: Tuple[int, int], level: int) -> int:
+    """清扫范围内还能看出的最大偏离（0~255）—— 「到底擦干净没有」的判据。"""
+    r = _sweep_reach(m, rect, roi_xy)
+    flags, x0, y0, bw, bh = r["flags"], r["x0"], r["y0"], r["w"], r["h"]
+    gray = cv2.cvtColor(patched, cv2.COLOR_BGR2GRAY)
+    region = gray[y0:y0 + bh, x0:x0 + bw]
+    dv = np.abs(region.astype(np.int16) - level)
+    return int(dv[flags].max()) if flags.any() else 0
 
 
 # ------------------------------------------------------------------ 掩膜构建
@@ -82,21 +270,17 @@ def build_mask(image_bgr: np.ndarray, rect: dict, pad: int = 3,
 # ------------------------------------------------------------------ 各策略实现
 
 def _fill(roi: np.ndarray, m: np.ndarray, bg_color_bgr: np.ndarray) -> np.ndarray:
-    """纯色填充：用紧贴掩膜外圈的真实像素估计局部背景色后整块填充。
+    """纯色填充：把掩膜内整块刷成背景色。
 
     背景是纯色时这一步就是"完美擦除"，不需要羽化——
     羽化反而会在本来完全一致的背景上造出可见的软边。
+    背景色由 erase() 统一估（见 _ring_bg_color），不在这里自己采样。
     """
     out = roi.copy()
-    if not m.any():
-        return out
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    ring = cv2.subtract(cv2.dilate(m, k), m)
-    if int(ring.sum() / 255) >= 12:
-        bg = np.median(roi[ring > 0], axis=0).astype(np.float32)
-    else:
-        bg = np.asarray(bg_color_bgr, dtype=np.float32).reshape(3)
-    out[m > 0] = np.clip(bg, 0, 255).astype(np.uint8)
+    if m.any():
+        # 必须 round 再转 uint8：astype 是**截断**，254.99 会变成 254，
+        # 而 JS 那边 byte() 是四舍五入 → 255。差这一个灰阶，两端的块就看得出来了。
+        out[m > 0] = np.clip(np.round(bg_color_bgr), 0, 255).astype(np.uint8)
     return out
 
 
@@ -222,7 +406,7 @@ def _edge_ratio(patched: np.ndarray, rect: dict, roi_xy: Tuple[int, int],
 
 def erase(image_bgr: np.ndarray, rect: dict, style: Optional[dict] = None,
           method: str = "auto", grow: int = 2, inpaint_radius: int = 3,
-          pad_ratio: float = 1.0) -> Tuple[np.ndarray, dict]:
+          pad_ratio: float = 1.0, cleanup: bool = True) -> Tuple[np.ndarray, dict]:
     """擦除指定区域的文字，返回 (新图, 元信息)。
 
     Args:
@@ -233,6 +417,7 @@ def erase(image_bgr: np.ndarray, rect: dict, style: Optional[dict] = None,
         grow:      掩膜膨胀，覆盖抗锯齿。
         inpaint_radius: inpaint 半径。
         pad_ratio: 外扩比例（取更大范围的参考背景）。
+        cleanup:   纯色底上的残影清扫（见 _sweep_residue）。
 
     Returns:
         (处理后的完整图像, {"method":..., "mask": np.ndarray, "box": (x,y,w,h)})
@@ -253,35 +438,62 @@ def erase(image_bgr: np.ndarray, rect: dict, style: Optional[dict] = None,
     roi = image_bgr[y:y2, x:x2].copy()
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     bg_level = _estimate_bg_level(gray)
+    probe = _box_probe(gray, rect, (x, y))
 
     bg_type = (style or {}).get("bg_type", "solid")
     # style 里的颜色统一是 RGB；像素级操作用 BGR，这里转换
     bg_rgb = (style or {}).get("bg_color", [255, 255, 255])
-    bg_color = np.asarray(bg_rgb, dtype=np.float32).reshape(3)[::-1].copy()
+    style_bg = np.asarray(bg_rgb, dtype=np.float32).reshape(3)[::-1].copy()
+    roi_bg = _roi_bg_color(gray, roi, style_bg)
 
     # ---- 策略选择 ----
     if method == "auto":
-        method = {"solid": "fill", "gradient": "linear"}.get(bg_type, "inpaint")
+        if style and style.get("bg_type"):
+            method = {"solid": "fill", "gradient": "linear"}.get(bg_type, "inpaint")
+        else:
+            # style 缺席时（文字工坊的"抹字"就是这种情况）不要一律当成纯色底 ——
+            # 先体检这块框自己的底色，纯色才填充，有纹理就交给 inpaint，
+            # 否则会在照片上糊出一块假的平面。
+            method = "fill" if probe["solid"] else "inpaint"
     used = method
 
     # ---- 擦除 + 残留自检：逐轮加大掩膜膨胀，直到区域内边缘能量降到背景水平 ----
     best_patch, best_mask, best_score = None, None, None
+    paint_bgr = roi_bg
     for extra in (0, 1, 2):
         m = _mask_in_roi(roi, rect, (x, y), grow=grow + extra, bg_level=bg_level)
-        patch = _apply_method(roi, m, method, bg_color, inpaint_radius)
+        # 第一轮就把"底到底是什么颜色"定下来：外圈主峰簇的均值（外圈不像背景时退回 roi_bg）
+        if best_mask is None:
+            paint_bgr = _ring_bg_color(roi, m, roi_bg)
+        patch = _apply_method(roi, m, method, paint_bgr, inpaint_radius)
         score = _edge_ratio(patch, rect, (x, y))
         if best_score is None or score < best_score:
             best_patch, best_mask, best_score = patch, m, score
         if score <= 2.0:                     # 已经够干净，不再扩大掩膜
             break
 
+    mask_pixels = int(best_mask.sum() / 255)
+    # 残影清扫 + 残留度量。
+    # 墨几乎占满整框（>90%）说明框里根本没什么背景可归位，这时不碰。
+    sweepable = cleanup and probe["solid"] and mask_pixels > 0 and probe["ink_ratio"] <= 0.9
+    swept = (_sweep_residue(best_patch, best_mask, rect, (x, y),
+                            probe["level"], paint_bgr, _BG_TOL) if sweepable else 0)
+    peak = (_residue_peak(best_patch, best_mask, rect, (x, y), probe["level"])
+            if sweepable else None)
+
     out = image_bgr.copy()
     out[y:y2, x:x2] = best_patch
     meta = {
         "method": used,
         "bg_type": bg_type,
-        "mask_pixels": int(best_mask.sum() / 255),
+        "bg_solid": probe["solid"],
+        "bg_level": int(probe["level"]),
+        "bg_ink": round(float(probe["ink_ratio"]), 3),
+        "mask_pixels": mask_pixels,
         "residual": round(float(best_score), 3),
+        "swept_pixels": swept,
+        # 清扫范围内还剩多少偏离背景（0~255）。纯色底才有意义，非纯色底给 None。
+        "leftover_max": None if peak is None else int(peak),
         "box": (x, y, x2 - x, y2 - y),
     }
     return out, meta

@@ -693,6 +693,15 @@ const MASK = {
   erasing: false,
   eraseImg: null,       // 抹字档的引擎结果（解码后的 Image）
   eraseSig: '',         // 结果对应的「开启中命中项的签名」，变了要重算
+  leftovers: [],        // 逐块残留（灰度标准差，有纹理的底子用它判）
+  peaks: [],            // 逐块「最大离背景偏移」（纯色底用它判）
+  worst: 0,             // 上述峰值里的最大者，给状态条用
+  levels: [],           // 诊断：逐块估出的背景主峰（查「取色错」时最直接的一眼）
+  inks: [],             // 诊断：逐块框内墨占比
+  masks: [],            // 诊断：逐块掩膜像素数
+  resids: [],           // 诊断：逐块边缘能量
+  methods: [],          // 诊断：逐块实际用的策略
+  probeCv: null,        // 自检用的取像素画布（记录里删掉抹字结果图时也要清）
 };
 
 const MASK_DETECT = { sig: '', lines: null, meta: null };
@@ -906,9 +915,15 @@ function updateMaskStats() {
   const n = MASK.hits.filter((h) => h.on !== false).length;
   const total = MASK.hits.length;
   if (el) {
-    el.textContent = total
+    let t = total
       ? `遮盖 ${n} / ${total} 处`
       : (MASK.file ? '未识别到敏感信息' : '待遮盖');
+    // 抹字档：把"到底擦干净没有"直接写在数字旁边，别让人只看预览去猜。
+    // 只在结果确实对应当前命中集时才报（签名一致），阈值与 ensureErase 同步。
+    if (MASK.method === 'erase' && MASK.eraseImg && total && MASK.eraseSig === hitSig()) {
+      t += MASK.worst > 16 ? ` · 抹字有残留(${MASK.worst})` : ' · 抹字已擦净';
+    }
+    el.textContent = t;
   }
   const dis = (id, v) => { const b = $(id); if (b) b.disabled = v; };
   dis('maskAllBtn', !total);
@@ -979,13 +994,29 @@ async function ensureErase() {
     if (!res || !res.image) throw new Error('本地引擎未提供擦除能力，请刷新页面重试');
     MASK.eraseImg = await loadImgEl(res.image);
     MASK.eraseSig = sig;
+    MASK.probeCv = null;                        // 换了结果图，取像素用的画布作废
+    const peaks = res.peaks || [];
+    const solids = res.solids || [];
     MASK.leftovers = res.leftovers || [];       // 自检与调试用
-    // 擦完还有起伏就直说 —— 抹字留了残影而用户以为盖好了，比不盖更糟。
-    // 阈值 8：纯色底擦净时标准差 < 2，肉眼可见的残影一般在 10 以上。
-    const bad = (res.leftovers || []).filter((v) => v > 8).length;
+    MASK.peaks = peaks;
+    MASK.levels = res.levels || [];
+    MASK.inks = res.inks || [];
+    MASK.masks = res.masks || [];
+    MASK.resids = res.resids || [];
+    MASK.methods = res.methods || [];
+    // 擦完还有残留就直说 —— 抹字留了残影而用户以为盖好了，比不盖更糟。
+    // 两把尺子分开用：纯色底看"最大离背景偏移"（擦净 0~3，一道灰痕就上几十）；
+    // 有纹理的底子那个数没有判别力，回退看灰度标准差（擦净 < 2）。
+    const badSolid = peaks.filter((v, i) => solids[i] && typeof v === 'number' && v > 16).length;
+    const badTexture = (res.leftovers || [])
+      .filter((v, i) => !solids[i] && v > 8).length;
+    const bad = badSolid + badTexture;
+    MASK.worst = peaks.reduce(
+      (m, v) => (typeof v === 'number' && v > m ? v : m), 0);
     setStatus(MASK_ELS.status,
       bad ? `有 ${bad} 处没擦净，这类内容建议改用色块` : '',
       bad ? 'err' : '');
+    updateMaskStats();
     paintMasks();
   } catch (err) {
     setStatus(MASK_ELS.status, `擦除失败：${String((err && err.message) || err)}`, 'err');
@@ -1017,6 +1048,11 @@ async function handleMaskFile(file) {
   MASK.lines = null;
   MASK.eraseImg = null;
   MASK.eraseSig = '';
+  MASK.probeCv = null;
+  MASK.leftovers = [];
+  MASK.peaks = [];
+  MASK.worst = 0;
+  MASK.levels = []; MASK.inks = []; MASK.masks = []; MASK.resids = []; MASK.methods = [];
   $(MASK_ELS.name).textContent = MASK.name;
   $(MASK_ELS.meta).textContent = '';
   $(MASK_ELS.pickText).textContent = '换一张';
@@ -1687,6 +1723,31 @@ window.WBText = {
     const d = cv.getContext('2d').getImageData(
       Math.round(x * k), Math.round(y * k), 1, 1).data;
     return [d[0], d[1], d[2], d[3]];
+  },
+  /**
+   * 自检用：读**抹字结果图**任意区域的灰度极值。
+   * 不走遮盖层 —— 那里除命中框之外是透明的，量"框外有没有被碰"会量到假值。
+   */
+  eraseBox(x, y, w, h) {
+    const im = MASK.eraseImg;
+    if (!im || !im.naturalWidth) return null;
+    if (!MASK.probeCv) {
+      const c = document.createElement('canvas');
+      c.width = im.naturalWidth; c.height = im.naturalHeight;
+      c.getContext('2d').drawImage(im, 0, 0);
+      MASK.probeCv = c;
+    }
+    const x0 = Math.max(0, Math.round(x)), y0 = Math.max(0, Math.round(y));
+    const w0 = Math.max(1, Math.min(Math.round(w), im.naturalWidth - x0));
+    const h0 = Math.max(1, Math.min(Math.round(h), im.naturalHeight - y0));
+    const d = MASK.probeCv.getContext('2d').getImageData(x0, y0, w0, h0).data;
+    let lo = 255, hi = 0, at = null;
+    for (let i = 0; i < d.length; i += 4) {
+      const g = (0.114 * d[i] + 0.587 * d[i + 1] + 0.299 * d[i + 2]) | 0;
+      if (g < lo) { lo = g; at = [x0 + (i / 4) % w0, y0 + Math.floor((i / 4) / w0)]; }
+      if (g > hi) hi = g;
+    }
+    return { min: lo, max: hi, at };
   },
 };
 

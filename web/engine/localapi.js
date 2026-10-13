@@ -260,6 +260,18 @@ export class LocalApi {
         // 前端据此提示用户改用色块 —— 抹字留了残影而用户不知道，
         // 比不盖更糟，所以这一项宁可多提示。
         leftovers: details.map((d) => Math.round(d.left * 10) / 10),
+        // 纯色底上更灵敏的那把尺：擦净时是 0~3，残留一道灰痕立刻上到几十。
+        // 非纯色底给 null —— 那种底子"偏离背景"没有判别力，交给上面的 std。
+        peaks: details.map((d) => (d.meta.leftover_max === null || d.meta.leftover_max === undefined
+          ? null : d.meta.leftover_max)),
+        solids: details.map((d) => d.meta.bg_solid === true),
+        swept: details.map((d) => d.meta.swept_pixels || 0),
+        // 诊断用（自检与排查取色/度量问题）：背景主峰、框内墨占比、掩膜量、边缘能量
+        levels: details.map((d) => d.meta.bg_level),
+        inks: details.map((d) => d.meta.bg_ink),
+        masks: details.map((d) => d.meta.mask_pixels),
+        resids: details.map((d) => d.meta.residual),
+        methods: details.map((d) => d.meta.method),
         elapsed_ms: Math.round(performance.now() - t0),
       };
     } finally {
