@@ -55,6 +55,11 @@
 - 改了 `web/` 下的页面或脚本，顺手把 `web/index.html` 里的 `?v=` 版本号 +0.1：
   `/static/*` 走静态资源层，版本号是防浏览器缓存读到旧脚本的唯一手段（`/assets/*`
   才有 immutable 头，页面脚本没有）。
+- **动态 `import()` 的模块（如 `web/engine/extract.js`）要自己拼上当前 `?v=`**：
+  它不在 index.html 里，不会被版本号带上，不手动拼就会被浏览器吃旧脚本
+  （`web/text.js` 里的 `VER` 就是这么来的）。
+- 无头跑 `tools/probe_views.mjs` 时传 `--profile <固定目录>` 可复用模型缓存，
+  否则每次重新 profile 都要重下 40MB（首次 3~5 分钟，别误判成卡死）。
 - 每轮改动结束就 `git commit`；`git push` 之前必须先问用户（见 README 版本管理）。
 - **部署**：`cd cloudflare && ./node_modules/.bin/wrangler deploy`。
   `wrangler.toml` 改完**不能只看 "Deployed" 就算成功** —— 必须核对 triggers 里有没有

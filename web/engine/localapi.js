@@ -61,6 +61,7 @@ export class LocalApi {
       if (url === '/api/fonts/upload') return await this.fontsUpload(body);
       if (url === '/api/fonts/scan') return await this.fontsScan();
       if (url === '/api/analyze') return await this.analyze(body);
+      if (url === '/api/text/detect') return await this.textDetect(body);
       if (url === '/api/preview') return await this.preview(body);
       if (url === '/api/preview-batch') return await this.previewBatch(body);
       if (url === '/api/apply') return await this.apply(body);
@@ -127,6 +128,45 @@ export class LocalApi {
       width: imgBgr.cols,
       height: imgBgr.rows,
       backend: 'browser-wasm',
+      count: items.length,
+      items,
+      elapsed_ms: Math.round(performance.now() - t0),
+    };
+  }
+
+  /**
+   * 取文字用的轻量通道：**只做检测识别，不做样式分析**。
+   *
+   * 与 /api/analyze 的差别只有一处：省掉 analyzeMany（字体 / 颜色 / 描边 /
+   * 字号判定）。「把图里的文字拿出来」用不到那些字段，而样式分析恰恰是
+   * 整条链路里偏贵的一段（要逐框裁图、扫背景、跑模板匹配），省掉能明显更快。
+   *
+   * 刻意**不建会话、不存 BGR**：取文字不回写原图，存着只是白占内存
+   * （那是 /api/analyze 的会话模型，给改字/翻译这种要重绘的场景用的）。
+   */
+  async textDetect(fd) {
+    const file = fd.get('file');
+    if (!file || typeof file === 'string') throw new Error('缺少图片文件');
+    const merge = String(fd.get('merge_lines') ?? 'true') !== 'false';
+
+    const t0 = performance.now();
+    const { imageData, name } = await blobToImageData(file);
+    const cv = this.engine.cv;
+    const imgBgr = imageDataToBgrMat(cv, imageData);
+    const width = imgBgr.cols, height = imgBgr.rows;
+
+    let items;
+    try {
+      items = await detect(cv, this.engine.ocr, imgBgr, { merge, minScore: 0.35 });
+    } finally {
+      rm(imgBgr);
+    }
+
+    return {
+      backend: 'browser-wasm',
+      file_name: name,
+      width,
+      height,
       count: items.length,
       items,
       elapsed_ms: Math.round(performance.now() - t0),

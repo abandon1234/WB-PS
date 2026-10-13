@@ -227,6 +227,98 @@ try {
     tabOk && sm.maskVisible === true && sm.copyVisible === false, `hash="${sm.hash}"`);
   check('切模式后 hash 同步为 #text-mask', sm.hash === '#text-mask', `hash="${sm.hash}"`);
 
+  console.log('\n[2d] 取文字：纯函数层（不依赖 OCR，用构造的框）');
+  const pure = await cdp.evaluate(`(async () => {
+    const m = await import('/static/engine/extract.js');
+    const items = [
+      { id: 0, rect: { x: 100, y: 200, w: 80, h: 20 }, text: '第二行', score: .9, angle: 0, quad_axis: true },
+      { id: 1, rect: { x: 20, y: 100, w: 160, h: 60 }, text: '大标题', score: .9, angle: 0, quad_axis: true },
+      { id: 2, rect: { x: 20, y: 200, w: 60, h: 20 }, text: '第一行', score: .9, angle: 0, quad_axis: true },
+      { id: 3, rect: { x: 20, y: 240, w: 300, h: 20 }, text: '正文一句结束了。', score: .9, angle: 0, quad_axis: true },
+      { id: 4, rect: { x: 20, y: 280, w: 300, h: 20 }, text: '另一段话', score: .9, angle: 0, quad_axis: true },
+    ];
+    const out = m.extract(items);
+    return {
+      lines: out.lines.map(l => l.text),
+      paras: out.paragraphs.map(p => p.map(l => l.text)),
+      md: out.markdown,
+      tight: m.joinSegments(['SN-2026', '0918'],
+        { gaps: [0, 0.5], lineH: 20 }),
+      loose: m.joinSegments(['Hello', 'world']),
+    };
+  })()`);
+  console.log(`      行：${JSON.stringify(pure.lines)}`);
+  console.log(`      段：${JSON.stringify(pure.paras)}`);
+  check('纯函数：行内按 x 排、跨行按 y 排',
+    pure.lines.join('|') === '大标题|第一行第二行|正文一句结束了。|另一段话',
+    pure.lines.join('|'));
+  check('纯函数：句末标点断开分段、标题不并进正文',
+    pure.paras.length === 3 && pure.paras[0].length === 1 && pure.paras[0][0] === '大标题',
+    JSON.stringify(pure.paras));
+  check('纯函数：md 按行高给出标题层级',
+    pure.md.startsWith('## 大标题'), JSON.stringify(pure.md.split('\n')[0]));
+  check('纯函数：段落内合行、中文不加空格（ASCII 词之间才加）',
+    pure.md.includes('第一行第二行正文一句结束了。'), '');
+  check('纯函数：贴得很近的片段不插空格', pure.tight === 'SN-20260918', pure.tight);
+  check('纯函数：正常间距的英文词之间加空格', pure.loose === 'Hello world', pure.loose);
+
+  console.log('\n[2e] 取文字：喂样例图跑通识别 → 列表 → 导出');
+  await cdp.send('DOM.enable');
+  const doc = await cdp.send('DOM.getDocument', { depth: -1 });
+  const found = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#copyInput' });
+  check('取文字：上传入口存在', !!found && !!found.nodeId, `nodeId=${found && found.nodeId}`);
+  const sample = path.resolve('samples/test_card.png');
+  check('取文字：样例图存在', fs.existsSync(sample), sample);
+
+  const t0det = Date.now();
+  await cdp.send('DOM.setFileInputFiles', { files: [sample], nodeId: found.nodeId });
+  await cdp.waitFor('!!(window.WBText && window.WBText.copy.result) || '
+    + '!!(window.WBLocal && window.WBLocal.error)', 240000, '取样识别完成');
+  const detMs = Date.now() - t0det;
+
+  const tp = await cdp.evaluate(`(() => {
+    const W = window.WBText, r = W.copy.result;
+    const norm = (el) => (el ? el.textContent.trim() : '');
+    return {
+      ok: !!r,
+      err: (window.WBLocal && window.WBLocal.error) ? String(window.WBLocal.error.message || '') : '',
+      count: r ? r.count : 0,
+      para: r ? r.paraCount : 0,
+      lines: W.lines(),
+      text: W.text(),
+      md: W.markdown(),
+      domRows: document.querySelectorAll('#copyLines .tw-line').length,
+      boxes: document.querySelectorAll('#copyOverlay .tw-box').length,
+      stats: norm(document.getElementById('copyStats')),
+      meta: norm(document.getElementById('copyMeta')),
+      foot: norm(document.querySelector('.tw-side-foot')),
+      txtOn: !document.getElementById('copyTxtBtn').disabled,
+      mdOn: !document.getElementById('copyMdBtn').disabled,
+      status: norm(document.getElementById('copyStatusText')),
+    };
+  })()`);
+  tp.lines.forEach((l, i) => console.log(`        ${i + 1}. ${l}`));
+  console.log(`      ${tp.stats} · ${tp.meta} · 用时 ${detMs}ms`);
+
+  check('取文字：识别成功（本地引擎无错）', tp.ok === true && !tp.err, tp.err);
+  check('取文字：识别出行', tp.count > 0, `${tp.count} 行`);
+  check('取文字：右侧列表行数与识别行数一致', tp.domRows === tp.count,
+    `DOM ${tp.domRows} / 数据 ${tp.count}`);
+  check('取文字：左侧检测框数与行数一致', tp.boxes === tp.count, `框 ${tp.boxes}`);
+  check('取文字：第一行是页面大标题',
+    (tp.lines[0] || '').includes('产品使用说明书'), tp.lines[0] || '(空)');
+  check('取文字：联系方式那一行被完整取到（含中英混排）',
+    tp.text.includes('support@example.com'), '');
+  check('取文字：界面文本与导出文本一致',
+    tp.lines.every((l) => tp.text.includes(l)), '');
+  check('取文字：md 含标题层级',
+    /^## /m.test(tp.md), JSON.stringify((tp.md.split('\n').find((l) => l.startsWith('## ')) || '').slice(0, 30)));
+  check('取文字：导出按钮已启用', tp.txtOn === true && tp.mdOn === true);
+  check('取文字：界面标注「本机 / 不上传」',
+    /本机/.test(tp.foot) && /不上传/.test(tp.foot), tp.foot.slice(0, 40));
+  check('取文字：识别耗时已回报到界面', /识别 \d+ms/.test(tp.meta), tp.meta);
+  check('取文字：状态条收起（无残留「识别中」）', tp.status === '', tp.status);
+
   console.log('\n[3] 点「作品库」');
   const c2 = await clickNav('projects', 'images');
   const s2 = await viewState();
