@@ -9,10 +9,12 @@ const $  = (id) => document.getElementById(id);
 
 /* ---------------------------------------------------------------- 视图路由 */
 /**
- * 本页现在是"无痕改字 + 图像生成"的双视图单页：
- *   #edit（默认）→ 改字视图      #generate/#projects → 生成视图
+ * 本页是"无痕改字 + 文字工坊 + 图像生成"的三视图单页：
+ *   #edit（默认）                                    → 改字视图
+ *   #text / #text-copy / #text-mask / #text-translate → 文字工坊视图
+ *   #generate / #projects（及老 key）                 → 生成视图
  *
- * 以前是 / → /image 两次独立加载，每次切回改字都要重新初始化本地引擎（实测 5.77s）。
+ * 以前是 / 与 /image 两次独立加载，每次切回改字都要重新初始化本地引擎（实测 5.77s）。
  * 合并到一页后，引擎只初始化一次，切换只换显隐，实测接近瞬时。
  */
 
@@ -21,64 +23,91 @@ const $  = (id) => document.getElementById(id);
  *  留着让收藏夹里的旧链接仍能落到生成视图（image.js 会把它们归一到 generate）。 */
 const IMAGE_KEYS = new Set(['generate', 'create', 'combine', 'portrait', 'product', 'projects']);
 
-function currentViewKey() {
-  const h = location.hash.replace(/^#/, '');
-  if (h && IMAGE_KEYS.has(h)) return h;
+/** 文字工坊的 hash 集合（与 text.js 的 MODES 对应）。
+ *  除了视图本身的 #text，其余是它的三个模式 —— 深链要能直接落到对应模式上。 */
+const TEXT_KEYS = new Set(['text', 'text-copy', 'text-mask', 'text-translate']);
+
+/** 视图归属：hash key → 三个容器之一。
+ *  容器只负责显隐；容器内部显示什么由各自模块按 key 自己决定。 */
+function viewOf(key) {
+  if (TEXT_KEYS.has(key)) return 'text';
+  if (IMAGE_KEYS.has(key)) return 'images';
   return 'edit';
 }
 
+function currentViewKey() {
+  const h = location.hash.replace(/^#/, '');
+  if (h && (IMAGE_KEYS.has(h) || TEXT_KEYS.has(h))) return h;
+  return 'edit';
+}
+
+/** 三个视图容器的显隐（不碰 URL、不碰 hash）。
+ *  返回 false 说明页面骨架不对，调用方应直接放弃 —— 别继续写 hash。 */
+function paintView(name) {
+  const boxes = { edit: $('viewEdit'), images: $('viewImages'), text: $('viewText') };
+  if (!boxes.edit || !boxes.images || !boxes.text) return false;
+  for (const n of Object.keys(boxes)) {
+    const on = n === name;
+    boxes[n].hidden = !on;
+    boxes[n].classList.toggle('on', on);
+  }
+  document.body.classList.toggle('mode-images', name === 'images');
+  document.body.classList.toggle('mode-text', name === 'text');
+  return true;
+}
+
 /**
- * 生成视图请求切到某个工具时的回调（由 image.js 在嵌入模式下调用）。
+ * 「用户主动要去某个视图」的统一入口：显隐 + 补 hash + 侧栏高亮。
  *
- * 为什么需要它：从「空 hash 的首页」点侧边栏「AI 生成」时，
- * 目标地址 /#create 与当前 / 相比只有 hash 变化，而 hashchange 在
- * 「空 hash → 有 hash」这一步上并不总会派发（实测某些时序下收不到），
- * 结果点了没反应。所以让 image.js 直接喊一声，外层立刻切视图，
- * 不依赖 hashchange 事件。
+ * 为什么需要它：从「空 hash 的首页」点侧边栏某一项时，目标地址与当前地址
+ * 相比只有 hash 变化，而 hashchange 在「空 hash → 有 hash」这一步上并不总会
+ * 派发（实测某些时序下收不到），结果点了没反应。所以由视图模块直接喊一声，
+ * 外层立刻切视图，不依赖 hashchange 事件。
+ *
+ * ⚠️ hash 只在**用户主动切换**时写（用 replaceState，不留历史记录）。
+ * 由 URL 触发的 applyViewRoute 不写 —— 否则刷新一次就会多出一个 #edit。
  */
-window.WBShowImages = function (key) {
-  imagesReady = true;
-  const boxImages = $('viewImages');
-  const boxEdit = $('viewEdit');
-  if (!boxImages || !boxEdit) return;
-  boxImages.hidden = false;
-  boxImages.classList.add('on');
-  boxEdit.hidden = true;
-  boxEdit.classList.remove('on');
-  document.body.classList.add('mode-images');
-  // 把 hash 补上（这样刷新/分享能回到同一视图），但不再回喊 image.js，避免绕圈
-  const want = '#' + (key || 'generate');
+function goView(name, key) {
+  if (!paintView(name)) return;
+  const want = '#' + (key || name);
   if (location.hash !== want) history.replaceState(null, '', want);
   if (window.WBShell) WBShell.syncActive();
+}
+
+window.WBShowImages = function (key) {
+  imagesReady = true;
+  goView('images', key || 'generate');
 };
 
-/** 外层只负责显示哪个视图；生成视图内部显示什么由 image.js 按自己的状态决定 */
+/** 文字工坊的回喊通道（由 text.js 在切模式时调用），语义同 WBShowImages */
+window.WBShowText = function (key) {
+  textReady = true;
+  goView('text', key || 'text');
+};
+
+/** 外层只负责显示哪个视图；视图内部显示什么由各自模块按自己的状态决定 */
 function applyViewRoute() {
   const key = currentViewKey();
-  const toImages = key !== 'edit';
-  const boxImages = $('viewImages');
-  const boxEdit = $('viewEdit');
-  if (!boxImages || !boxEdit) return;
+  const name = viewOf(key);
 
-  // 生成视图就绪前不切过去 —— 否则会闪一个空壳
-  if (toImages && !imagesReady) {
-    window.__pendingView = key;
-    return;
-  }
+  // 目标视图就绪前不切过去 —— 否则会闪一个空壳
+  if (name === 'images' && !imagesReady) { window.__pendingView = key; return; }
+  if (name === 'text' && !textReady) { window.__pendingView = key; return; }
 
-  boxImages.hidden = !toImages;
-  boxImages.classList.toggle('on', toImages);
-  boxEdit.hidden = toImages;
-  boxEdit.classList.toggle('on', !toImages);
-  document.body.classList.toggle('mode-images', toImages);
+  if (!paintView(name)) return;
+  window.__pendingView = null;
 
-  if (toImages && window.WBImage && window.WBImage.showKey) {
+  if (name === 'images' && window.WBImage && window.WBImage.showKey) {
     window.WBImage.showKey(key);
+  }
+  if (name === 'text' && window.WBText && window.WBText.showKey) {
+    window.WBText.showKey(key);
   }
   if (window.WBShell) WBShell.syncActive();
 }
 
 let imagesReady = false;
+let textReady = false;
 window.addEventListener('hashchange', applyViewRoute);
 window.addEventListener('wb-images-ready', () => {
   imagesReady = true;
@@ -86,6 +115,13 @@ window.addEventListener('wb-images-ready', () => {
   window.__pendingView = null;
   applyViewRoute();
   if (want && window.WBImage && window.WBImage.showKey) window.WBImage.showKey(want);
+});
+window.addEventListener('wb-text-ready', () => {
+  textReady = true;
+  const want = window.__pendingView;
+  window.__pendingView = null;
+  applyViewRoute();
+  if (want && window.WBText && window.WBText.showKey) window.WBText.showKey(want);
 });
 
 /* 浏览器本地引擎优先：改字全流程（识别→样式→擦除→重绘）都在本地跑，

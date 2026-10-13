@@ -38,17 +38,25 @@ window.WBShell = (function () {
 
   /* 侧栏导航：一处定义，两个页面共用。
      生成相关的四个工具（自由生成 / 图像融合 / 人物写真 / 商品图生成）本质是
-     同一件事 —— 提示词 + 可选参考图，差异只是提示词怎么写，所以并成一个入口。 */
+     同一件事 —— 提示词 + 可选参考图，差异只是提示词怎么写，所以并成一个入口。
+
+     「文字工坊」把"图里的文字"这件事按输出目标分成三个模式（取文字 / 打码 / 翻译），
+     共用同一次检测结果，所以也是一个入口，模式靠 hash 子键区分。 */
   const NAV = [
     { key: 'edit', label: '无痕改字', href: '/#edit', icon: '#i-type', sec: '图片工具' },
+    { key: 'text', label: '文字工坊', href: '/#text', icon: '#i-shield', sec: '图片工具' },
     { key: 'generate', label: 'AI 生成', href: '/#generate', icon: '#i-spark', sec: '图片工具' },
     { key: 'projects', label: '作品库', href: '/#projects', icon: '#i-folder', sec: '资源', badge: true },
   ];
 
-  /* 合并前的老链接（#create/#combine/#portrait/#product）仍算「AI 生成」，
-     这样收藏夹里的旧地址、外面发过的链接点进来高亮不会丢。 */
+  /* 别名表：老链接与子模式 → 侧栏项 key，用来决定高亮哪一项。
+     - #create/#combine/#portrait/#product：合并成「AI 生成」之前的老地址，
+       收藏夹里的旧链接、外面发过的链接点进来高亮不能丢。
+     - #text-copy/#text-mask/#text-translate：文字工坊的三个模式，
+       它们不是独立的侧栏项，统一高亮到「文字工坊」。 */
   const LEGACY = {
     create: 'generate', combine: 'generate', portrait: 'generate', product: 'generate',
+    'text-copy': 'text', 'text-mask': 'text', 'text-translate': 'text',
   };
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>

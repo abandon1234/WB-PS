@@ -4,9 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图片工具 · 无痕改字 &amp; 图像生成</title>
-<link rel="stylesheet" href="/static/shell.css?v=3.6">
-<link rel="stylesheet" href="/static/style.css?v=3.6">
-<link rel="stylesheet" href="/static/image.css?v=3.6">
+<link rel="stylesheet" href="/static/shell.css?v=3.7">
+<link rel="stylesheet" href="/static/style.css?v=3.7">
+<link rel="stylesheet" href="/static/image.css?v=3.7">
+<link rel="stylesheet" href="/static/text.css?v=3.7">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%237ee04a'/><text x='50' y='72' font-size='62' text-anchor='middle' fill='%230a1503' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
@@ -479,18 +480,61 @@
         </section>
       </div>
 
+    <!-- ---------- 文字工坊视图（取文字 / 打码 / 翻译） ----------
+         三个模式共用同一次文字检测结果，差别只在"后半段输出什么"：
+         取文字与打码只需 detect()，翻译需要 analyze()（要样式才能还原）。
+         完整设计与排期见 docs/plan-text-workshop.md。 -->
+      <div class="view-embed" id="viewText" hidden>
+
+        <header class="tw-top">
+          <div class="tw-title">
+            <h1>文字工坊</h1>
+            <p class="sub">取文字 · 打码 · 翻译 · 全程本机处理，图片不上传</p>
+          </div>
+          <div class="tw-modes" id="twModes" role="tablist"></div>
+        </header>
+
+        <section class="tw-panel" id="viewTextCopy" hidden>
+          <div class="tw-empty">
+            <div class="tw-empty-ic"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></div>
+            <h2>把图里的文字取出来</h2>
+            <p>识别后按阅读顺序排好，可逐行复制，也能导出 txt / Markdown</p>
+            <div class="tw-todo">第 1 期 · 引擎接入中，本期只搭外壳</div>
+          </div>
+        </section>
+
+        <section class="tw-panel" id="viewTextMask" hidden>
+          <div class="tw-empty">
+            <div class="tw-empty-ic"><svg viewBox="0 0 24 24"><use href="#i-shield"/></svg></div>
+            <h2>分享前先把敏感信息盖掉</h2>
+            <p>自动找出手机号、身份证、银行卡、邮箱等，用色块或抹字遮盖，导出不带 EXIF</p>
+            <div class="tw-todo">第 2 期 · 待接规则匹配与遮盖</div>
+          </div>
+        </section>
+
+        <section class="tw-panel" id="viewTextTranslate" hidden>
+          <div class="tw-empty">
+            <div class="tw-empty-ic"><svg viewBox="0 0 24 24"><use href="#i-type"/></svg></div>
+            <h2>把图里的文字换成另一种语言</h2>
+            <p>译文原位贴回，沿用原图的字体与样式；本期只支持中 ↔ 英</p>
+            <div class="tw-todo">第 3 期 · 待接翻译服务</div>
+          </div>
+        </section>
+      </div>
+
 </main>
 </div>
 
-<script src="/static/store.js?v=3.6"></script>
-<script src="/static/shell.js?v=3.6"></script>
-<script src="/static/workspace.js?v=3.6"></script>
-<script src="/static/app.js?v=3.6"></script>
-<script src="/static/toolcache.js?v=3.6"></script>
-<script src="/static/image.js?v=3.6"></script>
+<script src="/static/store.js?v=3.7"></script>
+<script src="/static/shell.js?v=3.7"></script>
+<script src="/static/workspace.js?v=3.7"></script>
+<script src="/static/app.js?v=3.7"></script>
+<script src="/static/toolcache.js?v=3.7"></script>
+<script src="/static/image.js?v=3.7"></script>
+<script src="/static/text.js?v=3.7"></script>
 <!-- 浏览器本地引擎（模型缓存在浏览器，网页直接调用本地缓存推理）。
      module 默认延迟执行，会排在上面几个普通脚本之后。 -->
-<script type="module" src="/static/engine/boot.js?v=3.6"></script>
+<script type="module" src="/static/engine/boot.js?v=3.7"></script>
 
 <!-- ======================= 生成视图的浮层（弹层 / 灯箱 / toast） ======================= -->
 <div class="pop-wrap" id="popWrap" hidden></div>

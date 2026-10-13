@@ -1,11 +1,12 @@
 /**
- * 双视图合并后的切换验证
+ * 三视图（无痕改字 / 文字工坊 / 图像生成）切换验证
  *
- * 关注四件事：
- *   1. / 上两个视图能按 hash 正确切换（改字 ↔ 生成 ↔ 作品库）
- *   2. 切换【不再重新加载页面】（这是本次改造的目的）
- *   3. 老链接 /image 仍能落到生成视图
- *   4. 切换耗时（与合并前对比）
+ * 关注五件事：
+ *   1. / 上各视图能按 hash 正确切换（改字 ↔ 文字工坊 ↔ 生成 ↔ 作品库）
+ *   2. 切换【不再重新加载页面】（这是当初合并的目的）
+ *   3. 老链接 /image 与老 hash（#create/#combine…）仍能落到生成视图
+ *   4. 文字工坊的三种模式深链（#text / #text-copy / #text-mask / #text-translate）
+ *   5. 切换耗时（与合并前对比）
  *
  *   node tools/probe_views.mjs [--base http://127.0.0.1:8788] [--profile <dir>]
  */
@@ -101,18 +102,24 @@ cdp.on('Runtime.exceptionThrown', (p) => pageErrors.push(String(
   p.exceptionDetails?.exception?.description || p.exceptionDetails?.text).split('\n')[0]));
 
 const viewState = () => cdp.evaluate(`(() => {
-  const e = document.getElementById('viewEdit'), i = document.getElementById('viewImages');
   const vis = (el) => !!(el && !el.hidden && getComputedStyle(el).display !== 'none');
+  const e = document.getElementById('viewEdit');
+  const i = document.getElementById('viewImages');
+  const t = document.getElementById('viewText');
   return {
-    edit: vis(e), images: vis(i),
+    edit: vis(e), images: vis(i), text: vis(t),
     hash: location.hash, path: location.pathname,
-    genVisible: (() => { const g = document.getElementById('viewGenerate');
-      return !!(g && !g.hidden && getComputedStyle(g).display !== 'none'); })(),
-    projVisible: (() => { const pr = document.getElementById('viewProjects');
-      return !!(pr && !pr.hidden && getComputedStyle(pr).display !== 'none'); })(),
+    genVisible: vis(document.getElementById('viewGenerate')),
+    projVisible: vis(document.getElementById('viewProjects')),
+    copyVisible: vis(document.getElementById('viewTextCopy')),
+    maskVisible: vis(document.getElementById('viewTextMask')),
+    transVisible: vis(document.getElementById('viewTextTranslate')),
     bodyMode: document.body.className,
   };
 })()`);
+
+/** 每个视图对应的容器 id（clickNav 用它判断"切过去了没有"） */
+const VIEW_ID = { edit: 'viewEdit', images: 'viewImages', text: 'viewText' };
 
 /** 点侧边栏导航项，并等目标视图真正显示出来（不是死等固定时长） */
 async function clickNav(key, expect) {
@@ -128,9 +135,9 @@ async function clickNav(key, expect) {
     return true;
   })()`);
   // 等到期望的视图可见 —— 切换本身很快，但内部还要渲染，固定 sleep 会误判
-  const expr = expect === 'edit'
-    ? "(() => { const e=document.getElementById('viewEdit'); return !!(e && !e.hidden && getComputedStyle(e).display!=='none'); })()"
-    : "(() => { const i=document.getElementById('viewImages'); return !!(i && !i.hidden && getComputedStyle(i).display!=='none'); })()";
+  const vid = VIEW_ID[expect] || 'viewEdit';
+  const expr = `(() => { const el = document.getElementById('${vid}');`
+    + " return !!(el && !el.hidden && getComputedStyle(el).display !== 'none'); })()";
   try {
     await cdp.waitFor(expr, 15000, `切到 ${expect}`);
   } catch (_) { /* 交给断言报错 */ }
@@ -139,7 +146,7 @@ async function clickNav(key, expect) {
 
 try {
   console.log('='.repeat(74));
-  console.log(`双视图切换验证   ${BASE}/`);
+  console.log(`三视图切换验证   ${BASE}/`);
   console.log('='.repeat(74));
 
   await cdp.send('Page.navigate', { url: `${BASE}/` });
@@ -186,14 +193,39 @@ try {
     };
   })()`);
   console.log(`      侧栏项：${copy.navs.join(' / ')}`);
-  check('侧栏只剩三项（改字 / AI 生成 / 作品库）',
-    copy.navs.join(',') === 'edit,generate,projects', copy.navs.join(','));
+  check('侧栏四项（改字 / 文字工坊 / AI 生成 / 作品库）',
+    copy.navs.join(',') === 'edit,text,generate,projects', copy.navs.join(','));
   check('生成区标题是「AI 图片生成」', copy.title === 'AI 图片生成', copy.title);
   check('上传区说明写明「不传就是纯文生图」',
     copy.hint.includes('不传就是纯文生图'), copy.hint);
   check('参照图不再强制（计数为 0/4）', copy.refCount === '0/4', copy.refCount);
   check('空态提示已按合并后的语义改写',
     copy.tips.length === 3 && copy.tips[0].includes('不传参考图'), copy.tips[0] || '');
+
+  console.log('\n[2c] 文字工坊：模式切换');
+  const ctw = await clickNav('text', 'text');
+  const stw = await viewState();
+  check('点侧栏切到文字工坊视图',
+    stw.text === true && stw.edit === false && stw.images === false,
+    `${ctw.ms}ms · hash="${stw.hash}"`);
+  check('默认落在「取文字」模式',
+    stw.copyVisible === true && stw.maskVisible === false && stw.transVisible === false,
+    `hash="${stw.hash}"`);
+  check('文字工坊切换没有重新加载页面', docLoads === loadsAfterFirst,
+    `文档加载 ${docLoads} 次`);
+
+  // 点页签切模式：hash 要跟着变，否则这个地址分享出去就回不到同一个模式
+  const tabOk = await cdp.evaluate(`(() => {
+    const b = document.querySelector('.tw-tab[data-mode="mask"]');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  await sleep(400);
+  const sm = await viewState();
+  check('点「打码」页签切到打码模式',
+    tabOk && sm.maskVisible === true && sm.copyVisible === false, `hash="${sm.hash}"`);
+  check('切模式后 hash 同步为 #text-mask', sm.hash === '#text-mask', `hash="${sm.hash}"`);
 
   console.log('\n[3] 点「作品库」');
   const c2 = await clickNav('projects', 'images');
@@ -224,6 +256,23 @@ try {
   check('老链接 /image#projects 跳到同一页且保留 hash',
     s5.path === '/' && s5.hash === '#projects' && s5.images === true,
     `${s5.path}${s5.hash}`);
+
+  await cdp.send('Page.navigate', { url: `${BASE}/#text-translate` });
+  await sleep(2500);
+  const s6 = await viewState();
+  check('深链 /#text-translate 直达翻译模式',
+    s6.text === true && s6.transVisible === true && s6.copyVisible === false,
+    `hash="${s6.hash}"`);
+  const hl = await cdp.evaluate(
+    "(() => { const a = document.querySelector('.sb-item.on'); return a ? a.dataset.key : ''; })()");
+  check('模式深链下侧栏仍高亮「文字工坊」', hl === 'text', `高亮项=${hl}`);
+  check('深链切换也没有重新加载页面以外的副作用', s6.edit === false && s6.images === false);
+
+  await cdp.send('Page.navigate', { url: `${BASE}/#text` });
+  await sleep(2500);
+  const s7 = await viewState();
+  check('裸 #text 落到默认模式，且 hash 不被悄悄改写',
+    s7.text === true && s7.copyVisible === true && s7.hash === '#text', `hash="${s7.hash}"`);
 
   console.log('\n[6] 双向切换耗时（采样 5 次取平均）');
   const times = [];
