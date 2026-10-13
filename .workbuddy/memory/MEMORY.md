@@ -55,6 +55,9 @@
 - 改了 `web/` 下的页面或脚本，顺手把 `web/index.html` 里的 `?v=` 版本号 +0.1：
   `/static/*` 走静态资源层，版本号是防浏览器缓存读到旧脚本的唯一手段（`/assets/*`
   才有 immutable 头，页面脚本没有）。
+- **动态 `import()` 必须手动拼上同一个 `?v=`**：它不在 index.html 里，
+  浏览器不会替它带版本号，会吃到缓存里的旧模块（踩点：`web/text.js` 里取
+  `engine/extract.js`）。普通 `<script src>` 有版本号可依赖，动态 import 没有。
 - **动态 `import()` 的模块（如 `web/engine/extract.js`）要自己拼上当前 `?v=`**：
   它不在 index.html 里，不会被版本号带上，不手动拼就会被浏览器吃旧脚本
   （`web/text.js` 里的 `VER` 就是这么来的）。
