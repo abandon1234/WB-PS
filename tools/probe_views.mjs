@@ -263,6 +263,15 @@ try {
   check('纯函数：正常间距的英文词之间加空格', pure.loose === 'Hello world', pure.loose);
 
   console.log('\n[2e] 取文字：喂样例图跑通识别 → 列表 → 导出');
+  // [2c] 结束在「打码」页签，先切回「取文字」—— 面板隐藏时量出来是 0×0，
+  // 下面的检测框对齐与缩放断言都要真实布局。
+  await cdp.evaluate("(() => { const b = document.querySelector('.tw-tab[data-mode=\"copy\"]');"
+    + ' if (b) b.click(); return true; })()');
+  await cdp.waitFor("(() => { const e = document.getElementById('viewTextCopy');"
+    + " return !!(e && !e.hidden && e.getBoundingClientRect().width > 100); })()",
+    10000, '切回取文字模式');
+  await sleep(300);
+
   await cdp.send('DOM.enable');
   const doc = await cdp.send('DOM.getDocument', { depth: -1 });
   const found = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#copyInput' });
@@ -318,6 +327,93 @@ try {
     /本机/.test(tp.foot) && /不上传/.test(tp.foot), tp.foot.slice(0, 40));
   check('取文字：识别耗时已回报到界面', /识别 \d+ms/.test(tp.meta), tp.meta);
   check('取文字：状态条收起（无残留「识别中」）', tp.status === '', tp.status);
+
+  console.log('\n[2f] 取文字：长截图默认收进可视区（缩放）');
+  // 复现用户报的问题：618×2560（1:4.14）的长截图按原宽铺开会有两千多 px 高，
+  // 得滚半天才看得全。这里在页面里现造一张同比例的长图（把样例图纵向拼 5 份），
+  // 走真实的 file input 路径，验「默认适应窗口 + 可放大 + 框不跑偏」。
+  const readGeo = () => cdp.evaluate(`(() => {
+    const c = document.getElementById('copyCanvas'), i = document.getElementById('copyImg');
+    const cs = getComputedStyle(c);
+    const availW = c.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const availH = c.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const ir = i.getBoundingClientRect();
+    const box = document.querySelector('#copyOverlay .tw-box');
+    const br = box ? box.getBoundingClientRect() : null;
+    return {
+      nw: i.naturalWidth, nh: i.naturalHeight,
+      w: +ir.width.toFixed(1), h: +ir.height.toFixed(1),
+      availW: +availW.toFixed(1), availH: +availH.toFixed(1),
+      zval: (document.getElementById('copyZoomVal') || {}).textContent || '',
+      ctlShown: !document.getElementById('copyZoom').hidden,
+      boxes: document.querySelectorAll('#copyOverlay .tw-box').length,
+      // 首行检测框相对图的位置 —— 缩放前后必须一样（百分比定位的意义所在）
+      boxRel: br ? { l: +((br.left - ir.left) / ir.width).toFixed(3),
+                     t: +((br.top - ir.top) / ir.height).toFixed(3) } : null,
+    };
+  })()`);
+
+  await cdp.evaluate(`(async () => {
+    const cv = document.createElement('canvas');
+    cv.width = 618; cv.height = 2560;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 618, 2560);
+    const src = await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im); im.onerror = rej;
+      im.src = '/samples/test_card.png';
+    });
+    const h = src.height * (618 / src.width);
+    for (let k = 0; k < 5; k++) ctx.drawImage(src, 0, k * (h + 30), 618, h);
+    const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'tall_shot.png', { type: 'image/png' }));
+    const inp = document.getElementById('copyInput');
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await cdp.waitFor(`(() => { const i = document.getElementById('copyImg');
+    return !!(i && i.naturalWidth === 618 && i.style.visibility !== 'hidden'); })()`,
+    90000, '长图已按适应窗口显示');
+
+  const fitted = await readGeo();
+  console.log(`      原图 ${fitted.nw}×${fitted.nh} → 显示 ${fitted.w}×${fitted.h}`
+    + `（可视区 ${fitted.availW}×${fitted.availH}）· 缩放 ${fitted.zval} · 框 ${fitted.boxes}`);
+  check('长截图：显示尺寸没有超出可视区（不再按宽度铺开）',
+    fitted.w <= fitted.availW + 1 && fitted.h <= fitted.availH + 1,
+    `${fitted.w}×${fitted.h} vs ${fitted.availW}×${fitted.availH}`);
+  check('长截图：长边方向接近铺满（没被缩得过小）',
+    Math.max(fitted.w / fitted.availW, fitted.h / fitted.availH) > 0.9,
+    `占比 ${(Math.max(fitted.w / fitted.availW, fitted.h / fitted.availH) * 100).toFixed(0)}%`);
+  check('长截图：默认不是 100%', fitted.zval !== '100%' && fitted.zval !== '', fitted.zval);
+  check('长截图：缩放控件已显示', fitted.ctlShown === true);
+
+  await cdp.evaluate("document.getElementById('copyZoomIn').click()");
+  await sleep(250);
+  const zoomed = await readGeo();
+  check('长截图：点 + 能明显放大（不是从 25% 挪到 25%）',
+    zoomed.w > fitted.w * 1.1, `${fitted.w}×${fitted.h} → ${zoomed.w}×${zoomed.h} · ${zoomed.zval}`);
+  check('长截图：放大后检测框仍贴原位（百分比定位不跑偏）',
+    !fitted.boxRel || !zoomed.boxRel
+      || (Math.abs(fitted.boxRel.l - zoomed.boxRel.l) < 0.01
+          && Math.abs(fitted.boxRel.t - zoomed.boxRel.t) < 0.01),
+    `${fitted.boxRel && fitted.boxRel.l} → ${zoomed.boxRel && zoomed.boxRel.l}`);
+
+  await cdp.evaluate("document.getElementById('copyZoomVal').click()");
+  await sleep(250);
+  const full = await readGeo();
+  check('长截图：点比例读数回到 100%（与原图 1:1）',
+    full.w === full.nw && full.h === full.nh && full.zval === '100%',
+    `${full.w}×${full.h} vs 原图 ${full.nw}×${full.nh} · ${full.zval}`);
+
+  await cdp.evaluate("document.getElementById('copyFit').click()");
+  await sleep(250);
+  const refit = await readGeo();
+  check('长截图：点「适应」收回可视区',
+    refit.w <= refit.availW + 1 && refit.h <= refit.availH + 1
+      && Math.abs(refit.w - fitted.w) <= 1,
+    `${refit.w}×${refit.h} · ${refit.zval}`);
 
   console.log('\n[3] 点「作品库」');
   const c2 = await clickNav('projects', 'images');

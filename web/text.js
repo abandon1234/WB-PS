@@ -106,6 +106,8 @@ const COPY = {
   imgW: 0, imgH: 0,
   result: null,
   busy: false,
+  zoom: 1,                 // 当前显示缩放比（显示尺寸 / 原图像素）
+  zoomMode: 'fit',         // 'fit' = 跟着可视区自动适应；'manual' = 用户定过，窗口变了也不动
 };
 
 /* 取文字用的是「只识别、不做样式分析」的通道：/api/analyze 会多跑一遍
@@ -186,9 +188,86 @@ function showImage(file) {
   const img = $('copyImg');
   if (COPY.objectUrl) URL.revokeObjectURL(COPY.objectUrl);
   COPY.objectUrl = URL.createObjectURL(file);
+  COPY.zoomMode = 'fit';
+  COPY.zoom = 1;
+  // 先藏起来：新版图解码完就按原尺寸渲染，等 load 里「适应窗口」算好了再亮，
+  // 否则会闪一下两千多 px 高的大图。
+  img.style.visibility = 'hidden';
   img.src = COPY.objectUrl;
   $('copyDrop').hidden = true;
   $('copyImgBox').hidden = false;
+  const z = $('copyZoom');
+  if (z) z.hidden = false;
+}
+
+/* ---------------------------------------------------------------- 缩放 */
+
+/* 手机截图动辄 618×2560（1:4），按原宽铺开就是两千多 px 高 —— 得滚半天才看得全，
+   也把右侧文本挤没了意义。所以默认「适应窗口」收进可视区，要核对文字再放大。
+   检测框是百分比定位，缩放后不用重算坐标。 */
+const ZOOM_LADDER = [0.05, 0.08, 0.12, 0.17, 0.25, 0.33, 0.5, 0.67, 0.8,
+                     1, 1.25, 1.5, 2, 2.5, 3, 4, 6];
+
+/** 画布可视区（去掉内边距）。视图不可见时量出来是 0，返回 null 让调用方跳过。 */
+function canvasBox() {
+  const c = $('copyCanvas');
+  if (!c) return null;
+  const cs = getComputedStyle(c);
+  const w = c.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const h = c.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  if (!(w > 1) || !(h > 1)) return null;
+  return { w, h };
+}
+
+/** 「适应窗口」的比例：等比收到可视区内，**不放大**（小图保持原始像素，别糊） */
+function fitScale() {
+  const img = $('copyImg');
+  const box = canvasBox();
+  if (!img || !box || !img.naturalWidth) return 0;
+  return Math.min(box.w / img.naturalWidth, box.h / img.naturalHeight, 1);
+}
+
+/** 把比例写到 img 上（imgbox 缩到内容大小，overlay 的百分比才对得上） */
+function applyImageScale(k) {
+  const img = $('copyImg');
+  if (!img || !img.naturalWidth || !(k > 0)) return;
+  COPY.zoom = k;
+  img.style.width = Math.max(1, Math.floor(img.naturalWidth * k)) + 'px';
+  img.style.height = Math.max(1, Math.floor(img.naturalHeight * k)) + 'px';
+  const val = $('copyZoomVal');
+  if (val) val.textContent = Math.round(k * 100) + '%';
+  const fit = $('copyFit');
+  if (fit) fit.classList.toggle('on', COPY.zoomMode === 'fit');
+}
+
+function setFit() {
+  COPY.zoomMode = 'fit';
+  const k = fitScale();
+  applyImageScale(k || 1);
+}
+
+function setZoom(k) {
+  COPY.zoomMode = 'manual';
+  applyImageScale(k);
+}
+
+/** 按挡位跳一格。要求至少变化 STEP，否则按一下几乎看不出变化 ——
+    「适应窗口」算出来的比例（比如 24.7%）常常正好贴着某个挡位（25%），
+    没有这个阈值时第一下 + 只是从 25% 挪到 25%，像点了没反应。 */
+const ZOOM_STEP = 1.15;
+
+function zoomStep(dir) {
+  const img = $('copyImg');
+  if (!img || !img.naturalWidth) return;
+  const cur = COPY.zoom || 1;
+  let k;
+  if (dir > 0) {
+    k = ZOOM_LADDER.find((v) => v > cur * ZOOM_STEP) || ZOOM_LADDER[ZOOM_LADDER.length - 1];
+  } else {
+    const lower = ZOOM_LADDER.filter((v) => v < cur / ZOOM_STEP);
+    k = lower.length ? lower[lower.length - 1] : ZOOM_LADDER[0];
+  }
+  setZoom(k);
 }
 
 /* ---------------------------------------------------------------- 检测框 */
@@ -438,6 +517,44 @@ function wireCopyMode() {
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (f) handleFile(f);
   });
+
+  // 图解码完 → 先按「适应窗口」缩好再亮出来（配合 showImage 里的 visibility）
+  const img = $('copyImg');
+  if (img) {
+    img.addEventListener('load', () => {
+      setFit();
+      img.style.visibility = '';
+    });
+    // 解码失败也要把图亮回来（否则画布一直空着，看起来像卡住）
+    img.addEventListener('error', () => {
+      img.style.visibility = '';
+      setStatus('这张图读不出来，换一张试试', 'err');
+    });
+  }
+
+  const fitBtn = $('copyFit');
+  if (fitBtn) fitBtn.addEventListener('click', setFit);
+  const zin = $('copyZoomIn');
+  if (zin) zin.addEventListener('click', () => zoomStep(1));
+  const zout = $('copyZoomOut');
+  if (zout) zout.addEventListener('click', () => zoomStep(-1));
+  const zval = $('copyZoomVal');
+  if (zval) zval.addEventListener('click', () => setZoom(1));   // 点比例 → 回 100%
+
+  // 窗口或侧栏宽度变了要重新适应。只在 fit 模式生效 —— 用户手动定过的比例不该被改掉。
+  // 用 rAF 去抖：applyImageScale 会改 img 尺寸，可能连带再触发一次本回调，等一帧再算。
+  if (window.ResizeObserver) {
+    let raf = 0;
+    new ResizeObserver(() => {
+      if (COPY.zoomMode !== 'fit' || !canvasBox()) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (COPY.zoomMode !== 'fit') return;
+        const k = fitScale();
+        if (k) applyImageScale(k);
+      });
+    }).observe(canvas);
+  }
 
   const all = $('copyAllBtn');
   if (all) all.addEventListener('click', async () => {
