@@ -358,6 +358,50 @@ image_config.ensure_seed()
 app.include_router(image_routes.router)
 
 
+# ------------------------------------------------------------------ 文字工坊 · 翻译
+
+# 取文字与打码**完全不碰服务端**（识别 / 排序 / 遮盖全在浏览器本机完成），
+# 所以这里只有翻译一条路 —— 不要为了"架构统一"再给它加别的接口。
+# 同构实现见 cloudflare/src/routes/text.js，两边行为必须保持一致。
+from . import text_translate                    # noqa: E402
+
+
+@app.get("/api/text/status")
+def text_status():
+    """翻译可用性。界面据此提示"未配置文本模型"，而不是等用户点了才报错。"""
+    active = image_config.active_provider()
+    model = (active or {}).get("text_model") or ""
+    return {
+        "ready": bool(active and model),
+        "model": model,
+        "message": ("就绪" if model else
+                    ("当前中转站未配置文本模型" if active else "后台尚未启用任何中转站")),
+        "hint": "请在后台「中转站配置」里填写文本模型（翻译用）" if (active and not model) else "",
+    }
+
+
+@app.post("/api/text/translate")
+async def text_translate_route(payload: Dict[str, Any] = Body(...)):
+    active = image_config.active_provider()
+    if active is None:
+        raise HTTPException(400, "后台尚未配置可用的中转站")
+
+    texts = payload.get("texts") or []
+    if not isinstance(texts, list):
+        raise HTTPException(400, "texts 必须是字符串数组")
+    timeout = int(payload.get("timeout") or 90)
+
+    try:
+        return text_translate.translate(
+            active, ["" if t is None else str(t) for t in texts],
+            payload.get("from") or "zh", payload.get("to") or "en", timeout)
+    except text_translate.GenError as exc:
+        d = exc.to_dict()
+        status = d.get("status")
+        raise HTTPException(status if isinstance(status, int) and status >= 400 else 400,
+                            d.get("message") or str(exc)) from exc
+
+
 # ------------------------------------------------------------------ 静态资源
 
 if os.path.isdir(WEB_DIR):

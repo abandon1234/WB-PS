@@ -8,6 +8,10 @@ import { ApiError } from "./resp.js";
 import { loadProviders, saveProviders, activeProvider } from "./store.js";
 
 export const DEFAULT_MODEL = "gpt-image-2";
+// 翻译用的对话模型。留空 = 翻译功能明确报"未配置文本模型"。
+// 刻意不给默认值：生图模型（gpt-image-*）做不了文本翻译，随便塞一个默认
+// 只会让用户看到一堆看不懂的上游报错，不如一开始就说清楚要去配。
+export const DEFAULT_TEXT_MODEL = "";
 export const DEFAULT_SIZE = "1024x1024";
 export const ALLOWED_SIZES = [
   "1024x1024",
@@ -34,6 +38,13 @@ function cleanBaseUrl(url) {
 function cleanModel(model) {
   const m = (model || "").trim() || DEFAULT_MODEL;
   if (m.length > 120) throw new ApiError(400, "模型名过长");
+  return m;
+}
+
+/** 文本模型可以留空（= 翻译未配置），所以不能复用 cleanModel 的默认值 */
+function cleanTextModel(model) {
+  const m = (model || "").trim();
+  if (m.length > 120) throw new ApiError(400, "文本模型名过长");
   return m;
 }
 
@@ -77,7 +88,7 @@ async function persist(kv, mutate) {
   return result;
 }
 
-export async function addProvider(kv, { name, base_url, api_key, model = DEFAULT_MODEL, note = "", enabled = true }) {
+export async function addProvider(kv, { name, base_url, api_key, model = DEFAULT_MODEL, text_model = DEFAULT_TEXT_MODEL, note = "", enabled = true }) {
   if (!String(api_key || "").trim()) throw new ApiError(400, "API key 不能为空");
   const now = Math.round(Date.now() / 1000);
   const item = {
@@ -86,6 +97,7 @@ export async function addProvider(kv, { name, base_url, api_key, model = DEFAULT
     base_url: cleanBaseUrl(base_url),
     api_key: String(api_key || "").trim(),
     model: cleanModel(model),
+    text_model: cleanTextModel(text_model),
     note: String(note || "").trim().slice(0, 200),
     enabled: !!enabled,
     created_at: now,
@@ -109,6 +121,9 @@ export async function updateProvider(kv, pid, fields) {
       if (fields.base_url) p.base_url = cleanBaseUrl(fields.base_url);
       if (fields.api_key) p.api_key = String(fields.api_key).trim(); // 空串 = 不修改
       if (fields.model) p.model = cleanModel(fields.model);
+      // 空串在这里是**有效值**（= 清空文本模型），与 api_key 的语义相反，
+      // 所以判的是 != null 而不是真值。
+      if (fields.text_model != null) p.text_model = cleanTextModel(fields.text_model);
       if (fields.note != null) p.note = String(fields.note).trim().slice(0, 200);
       if (fields.enabled != null) p.enabled = !!fields.enabled;
       p.updated_at = Math.round(Date.now() / 1000);
@@ -177,6 +192,7 @@ export async function ensureSeed(kv) {
     base_url: "https://code.linlong520.com",
     api_key: "",
     model: DEFAULT_MODEL,
+    text_model: DEFAULT_TEXT_MODEL,
     note: "",
     enabled: false,
     created_at: now,

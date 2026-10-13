@@ -264,6 +264,7 @@ function renderProviders() {
       <div class="pcard-rows">
         <div class="row"><span class="k">地址</span><span class="v mono">${esc(p.base_url)}</span></div>
         <div class="row"><span class="k">模型</span><span class="v mono">${esc(p.model)}</span></div>
+        <div class="row"><span class="k">文本模型</span><span class="v mono">${esc(p.text_model || '（未设置 · 翻译不可用）')}</span></div>
         <div class="row"><span class="k">Key</span><span class="v mono">${esc(p.api_key || '（未设置）')}</span></div>
         ${p.note ? `<div class="row"><span class="k">备注</span><span class="v">${esc(p.note)}</span></div>` : ''}
       </div>
@@ -339,6 +340,7 @@ function openForm(p) {
   $('fBase').value = p?.base_url || '';
   $('fKey').value = '';
   $('fModel').value = p?.model || 'gpt-image-2';
+  $('fTextModel').value = p?.text_model || '';
   $('fNote').value = p?.note || '';
   $('fEnabled').checked = p ? !!p.enabled : true;
   $('fKey').type = 'password';
@@ -370,6 +372,9 @@ function formPayload() {
     base_url: $('fBase').value.trim(),
     api_key: $('fKey').value.trim(),
     model: $('fModel').value.trim() || 'gpt-image-2',
+    // 空串在这里是**有效值**（= 清空文本模型），后端按 != null 判定，
+    // 与 api_key 的"空串 = 不修改"恰好相反 —— 别把这里改成 || 兜底。
+    text_model: $('fTextModel').value.trim(),
     note: $('fNote').value.trim(),
     enabled: $('fEnabled').checked,
   };

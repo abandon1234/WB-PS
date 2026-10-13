@@ -12,6 +12,7 @@
 import { json, errorResponse, corsHeaders } from "./resp.js";
 import { handleAdmin } from "./routes/admin.js";
 import { handleImage } from "./routes/image.js";
+import { handleText } from "./routes/text.js";
 import * as providers from "./providers.js";
 
 // 裸路径 → 静态页面。
@@ -68,6 +69,11 @@ export default {
       if (resp) return finalize(resp, env);
 
       resp = await handleImage(request, env, path);
+      if (resp) return finalize(resp, env);
+
+      // 文字工坊的翻译上游代理。取文字与打码**完全不碰服务端**（全在本机），
+      // 所以这里只有翻译这一条路 —— 不要为了"架构统一"再给它加别的接口。
+      resp = await handleText(request, env, path);
       if (resp) return finalize(resp, env);
 
       // 兼容入口：/image 已并入主页面 /

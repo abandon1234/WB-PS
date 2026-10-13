@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex,nofollow">
 <title>后台管理 · 图像工坊</title>
-<link rel="stylesheet" href="/static/admin.css?v=2.1">
+<link rel="stylesheet" href="/static/admin.css?v=2.2">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%235b9dff'/><text x='50' y='72' font-size='58' text-anchor='middle' fill='%2306122b' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
@@ -159,6 +159,12 @@
           </div>
 
           <label class="fld">
+            <span>文本模型（翻译用）</span>
+            <input type="text" id="fTextModel" class="input" placeholder="例如 gpt-4o-mini" spellcheck="false">
+            <em>图片翻译要一个对话模型；生图模型（如 gpt-image-2）不能用来翻译。留空则翻译功能不可用</em>
+          </label>
+
+          <label class="fld">
             <span>中转站地址</span>
             <input type="text" id="fBase" class="input" placeholder="https://your-relay.example.com" spellcheck="false">
             <em>填域名即可，末尾的 /v1 会自动去掉</em>
@@ -247,6 +253,6 @@
 
 <div class="toast-wrap" id="toastWrap"></div>
 
-<script src="/static/admin.js?v=2.1"></script>
+<script src="/static/admin.js?v=2.2"></script>
 </body>
 </html>

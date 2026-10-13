@@ -85,6 +85,33 @@ window.WBShowText = function (key) {
   goView('text', key || 'text');
 };
 
+/**
+ * 改字视图的对外接口。
+ *
+ * 注意不能拿 WBShowImages 代替 —— 那个函数名里的 images 是**视图容器**
+ * （viewImages，装的是生成 / 作品库），而改字在另一个容器 viewEdit 里。
+ * 早先没有人需要从别的视图跳回来，所以一直只有一个回喊通道。
+ *
+ * reload() 是给「文字工坊 · 翻译」用的：翻译模式把原图字节 + 会话 + 译文
+ * 写进本机工作区（workspace.js）后切过来，这里重读一次就接管了。
+ * 之所以不自己做一套交接协议：识别用的是同一个会话，item id 天然一致，
+ * 走已有的 restoreWorkspace 最省事，也不会两套状态互相打架。
+ */
+window.WBEdit = {
+  show() { goView('edit', 'edit'); },
+  // 自检用：确认交接真的落到了改字视图的状态里
+  get items() { return S.items; },
+  get edits() { return S.edits; },
+  get sessionId() { return S.sessionId; },
+  async reload() {
+    if ((S.items && S.items.length) || S.sessionId) {
+      const ok = window.confirm('「无痕改字」里已有正在编辑的图片，继续会把当前内容替换掉。继续？');
+      if (!ok) return false;
+    }
+    return await restoreWorkspace();
+  },
+};
+
 /** 外层只负责显示哪个视图；视图内部显示什么由各自模块按自己的状态决定 */
 function applyViewRoute() {
   const key = currentViewKey();

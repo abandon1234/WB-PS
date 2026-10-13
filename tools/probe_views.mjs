@@ -101,6 +101,12 @@ const pageErrors = [];
 cdp.on('Runtime.exceptionThrown', (p) => pageErrors.push(String(
   p.exceptionDetails?.exception?.description || p.exceptionDetails?.text).split('\n')[0]));
 
+// 自动放行 confirm()：无头下没人点"确定"，对话框会把脚本挂住
+// （改字视图的"覆盖当前图片"确认、关闭图片的确认都会走这里）。
+cdp.on('Page.javascriptDialogOpening', () => {
+  cdp.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+});
+
 const viewState = () => cdp.evaluate(`(() => {
   const vis = (el) => !!(el && !el.hidden && getComputedStyle(el).display !== 'none');
   const e = document.getElementById('viewEdit');
@@ -601,6 +607,163 @@ try {
   })()`);
   check('打码 · 导出的 JPEG 不含 APP1(Exif) 段（canvas 重编码天然抹掉元信息）',
     exif.app1 === false && exif.bytes > 500, `${exif.bytes} bytes · app1=${exif.app1}`);
+
+  console.log('\n[2i] 翻译：analyze → 上游翻译 → 复用 applyEdits 原位重绘');
+  await cdp.evaluate(`document.querySelector('.tw-tab[data-mode="translate"]').click()`);
+  await cdp.waitFor("(() => { const p = document.getElementById('viewTextTranslate');"
+    + " return !!(p && !p.hidden); })()", 10000, '翻译面板可见');
+
+  // 上游**不测真实服务**（生图 API 失效的教训在前）：把 /api/text/translate 拦下来
+  // 返回固定译文。第一行刻意给一段超长译文，用来验证「过宽时缩字号」这条
+  // 已有通路真的被复用上了。
+  await cdp.evaluate(`(() => {
+    if (window.__trOrigFetch) return true;
+    window.__trOrigFetch = window.fetch;
+    window.__trCalls = 0;
+    window.fetch = function (url, opt) {
+      const u = String(url && url.url ? url.url : url);
+      if (u.indexOf('/api/text/translate') >= 0 && (!opt || !opt.method || opt.method === 'POST')) {
+        window.__trCalls++;
+        const body = JSON.parse((opt && opt.body) || '{}');
+        const texts = (body.texts || []).map((t, i) => (i === 0
+          ? ('A deliberately overlong translation used to verify that the existing auto-fit shrink path is reused. '.repeat(2))
+          : ('EN:' + t)));
+        return Promise.resolve(new Response(JSON.stringify({
+          texts, model: 'mock-text-model', from: body.from, to: body.to,
+          finish_reason: 'stop', truncated: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return window.__trOrigFetch.apply(this, arguments);
+    };
+    return true;
+  })()`);
+
+  // 页面里现造一张多行中文图（不依赖样例文件与外部字体）
+  await cdp.evaluate(`(async () => {
+    const cv = document.createElement('canvas');
+    cv.width = 760; cv.height = 360;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 760, 360);
+    ctx.fillStyle = '#111'; ctx.font = '26px sans-serif';
+    ['你好世界', '这是一个测试', '图片翻译功能', '第四行文字'].forEach((t, i) => {
+      ctx.fillText(t, 30, 58 + i * 62);
+    });
+    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'translate_card.png', { type: 'image/png' }));
+    const inp = document.getElementById('trInput');
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await cdp.waitFor('(() => { const T = window.WBText.translate;'
+    + ' return !!(T.items && !T.busy); })()', 120000, '翻译模式识别完成');
+  await sleep(300);
+
+  const t0 = await cdp.evaluate(`(() => {
+    const T = window.WBText.translate;
+    return {
+      n: T.items.length,
+      pairs: window.WBText.trPairs().length,
+      firstSrc: T.pairs[0] ? T.pairs[0].src : '',
+      runEnabled: !document.getElementById('trRunBtn').disabled,
+      viewHidden: document.getElementById('trView').hidden,
+    };
+  })()`);
+  console.log(`      识别 ${t0.n} 行 · 首行「${t0.firstSrc}」`);
+  check('翻译 · 走 analyze 通道拿到 items 并逐行展开', t0.n > 0 && t0.pairs === t0.n,
+    `${t0.n} 行 / ${t0.pairs} 对照项`);
+  check('翻译 · 识别结果与「取文字」同一份（首行是完整短语，未被切碎）',
+    t0.firstSrc.length >= 2, t0.firstSrc);
+  check('翻译 · 未翻译前没有译文可看，翻译按钮已可用', t0.runEnabled === true && t0.viewHidden === true);
+
+  // 点「翻译」：内部会走 mock 上游 → 写回 edit → 调 /api/apply 重绘
+  await cdp.evaluate("document.getElementById('trRunBtn').click()");
+  await cdp.waitFor('(() => { const T = window.WBText.translate;'
+    + ' return !!(T.outUrl && !T.busy); })()', 180000, '翻译 + 重绘完成');
+  await sleep(500);
+
+  const t1 = await cdp.evaluate(`(() => {
+    const T = window.WBText.translate;
+    const img = document.getElementById('trImg');
+    const sentBox = document.getElementById('trSentBox');
+    return {
+      calls: window.__trCalls,
+      dst: T.pairs.map((p) => p.dst),
+      fitted: T.pairs.filter((p) => p.fitted).length,
+      applied: window.WBText.trPairs().filter((p) => p.on !== false).length,
+      edits: Object.keys(window.WBText.trEdits()).length,
+      imgIsResult: img.src === T.outUrl,
+      toggleShown: document.getElementById('trView').hidden === false,
+      saveEnabled: !document.getElementById('trSavePng').disabled,
+      toEditEnabled: !document.getElementById('trToEdit').disabled,
+      sentShown: !sentBox.hidden,
+      sentText: (document.getElementById('trSent').textContent || '').split('\\n')[0],
+      stats: document.getElementById('trStats').textContent,
+    };
+  })()`);
+  console.log(`      上游调用 ${t1.calls} 次 · ${t1.stats}`);
+  check('翻译 · 上游译文写回了每一行（mock 前缀可见）',
+    t1.dst.length === t0.n && t1.dst.every((d) => d && d.trim().length),
+    JSON.stringify(t1.dst.slice(0, 2)));
+  check('翻译 · 译文原样进入 edit（buildTrEdits 逐行生成）',
+    t1.edits === t0.n, `${t1.edits} 条 edit`);
+  check('翻译 · 长译文触发了「过宽缩字号」（复用现有 auto_fit 通路）',
+    t1.fitted >= 1, `缩字号 ${t1.fitted} 处`);
+  check('翻译 · 重绘结果已显示（画布换成译文图，原图/译文可切）',
+    t1.imgIsResult === true && t1.toggleShown === true);
+  check('翻译 · 导出口已打开', t1.saveEnabled === true && t1.toEditEnabled === true);
+  check('翻译 · 「本次发送出去的文字」把实际内容亮了出来',
+    t1.sentShown === true && t1.sentText.startsWith('1. '), t1.sentText);
+
+  // 原图 / 译文 切换：换的是同一张 <img> 的 src，尺寸一致、比例不该被重置
+  await cdp.evaluate("document.querySelector('#trView .tw-tbtn[data-v=\"source\"]').click()");
+  await sleep(300);
+  const tSrc = await cdp.evaluate(`(() => {
+    const T = window.WBText.translate, img = document.getElementById('trImg');
+    return { isSource: img.src === T.objectUrl, k: document.querySelector('#trZoomVal').textContent };
+  })()`);
+  await cdp.evaluate("document.querySelector('#trView .tw-tbtn[data-v=\"result\"]').click()");
+  await sleep(300);
+  const tRes = await cdp.evaluate(`(() => {
+    const T = window.WBText.translate, img = document.getElementById('trImg');
+    return { isResult: img.src === T.outUrl, k: document.querySelector('#trZoomVal').textContent };
+  })()`);
+  check('翻译 · 切到「原图」看到的是原图', tSrc.isSource === true, `缩放 ${tSrc.k}`);
+  check('翻译 · 切回「译文」看到的还是译文图（且缩放没被重置）',
+    tRes.isResult === true && tRes.k === tSrc.k, `${tSrc.k} → ${tRes.k}`);
+
+  // 手改译文：改完应当自动重绘（去抖 650ms）
+  const before = await cdp.evaluate('window.WBText.translate.outUrl.length');
+  await cdp.evaluate(`(() => {
+    const ta = document.querySelector('#trPairs .tw-pair textarea');
+    ta.value = 'Edited by hand';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  await cdp.waitFor(`window.WBText.translate.pairs[0].dst === 'Edited by hand'`, 5000, '手改译文已写入状态');
+  await sleep(1800);
+  const t2 = await cdp.evaluate(`(() => {
+    const T = window.WBText.translate;
+    return { dst: T.pairs[0].dst, len: T.outUrl.length, applied: T.pairs[0].applied };
+  })()`);
+  check('翻译 · 手动改译文后自动重绘', t2.dst === 'Edited by hand' && t2.applied === true && t2.len > 1000,
+    `${before} → ${t2.len} bytes`);
+
+  // 交接：发送到「无痕改字」继续精修
+  await cdp.evaluate("document.getElementById('trToEdit').click()");
+  await cdp.waitFor(`(() => { const e = document.getElementById('viewEdit');`
+    + ` return !!(e && !e.hidden && window.WBEdit.items && window.WBEdit.items.length); })()`,
+    90000, '改字视图接管了翻译结果');
+  const t3 = await cdp.evaluate(`(() => ({
+    view: document.getElementById('viewEdit').hidden === false,
+    items: window.WBEdit.items.length,
+    edits: Object.keys(window.WBEdit.edits).length,
+    status: (document.getElementById('statusText') || {}).textContent || '',
+  }))()`);
+  check('翻译 · 能交接到「无痕改字」继续精修（同一会话，id 对得上）',
+    t3.view === true && t3.items === t0.n && t3.edits >= 1,
+    `items ${t3.items} · edits ${t3.edits}`);
 
   console.log('\n[3] 点「作品库」');
   const c2 = await clickNav('projects', 'images');

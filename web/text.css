@@ -44,14 +44,6 @@
 .tw-empty h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
 .tw-empty p { margin: 0; font-size: 13px; line-height: 1.7; color: var(--text-2); }
 
-/* 未接入的期次提示：说清楚是"还没做"，不要让人当成坏了 */
-.tw-todo {
-  display: inline-block; margin-top: 18px; padding: 5px 11px;
-  font-size: 11.5px; border-radius: 999px;
-  color: var(--warn); background: rgba(255, 196, 77, .1);
-  border: 1px solid rgba(255, 196, 77, .28);
-}
-
 /* ===================================================================
    第 1 期 · 取文字：左边看图（带检测框），右边是按阅读顺序排好的文本
    =================================================================== */
@@ -326,6 +318,90 @@
 /* 合规文案：不宣称"无法还原"，把风险说在明处反而是信任资产 */
 .tw-note {
   margin: 0; font-size: 11px; line-height: 1.65; color: var(--text-3);
+}
+
+/* ===================================================================
+   第 3 期 · 翻译：analyze 拿样式 → 上游翻译 → 复用现有 applyEdits 重绘
+   -------------------------------------------------------------------
+   重绘这一层**没有任何新代码** —— 译文写回 item 的 edit.text，剩下的
+   擦除 / 匹配字体 / 描边 / 溢出收缩全走 app.js 改字视图在用的同一条管线。
+   所以这里只有"翻译"相关的样式。
+   =================================================================== */
+
+/* 原图 / 译文 切换：**放在图片上方而不是叠一层** —— 译文是张新图，
+   两张图的尺寸必然一致，直接换 src 最省事，也不用再算一次缩放。 */
+.tw-toggle {
+  display: flex; align-items: center; gap: 2px; padding: 2px;
+  border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border-2);
+}
+.tw-tbtn {
+  font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+  padding: 4px 11px; border-radius: 999px; border: 0; transition: .14s;
+  color: var(--text-2); background: transparent;
+}
+.tw-tbtn:hover { color: var(--text); }
+.tw-tbtn.on { color: var(--on-accent); background: var(--accent); font-weight: 500; }
+
+/* 语言方向 */
+.tw-langs {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+}
+.tw-sel {
+  font: inherit; font-size: 12px; cursor: pointer;
+  padding: 5px 7px; border-radius: var(--r-xs);
+  color: var(--text); background: var(--surface-2); border: 1px solid var(--border-2);
+}
+.tw-sel:focus { outline: none; border-color: var(--accent-line); }
+.tw-arrow { font-size: 12px; color: var(--text-3); }
+.tw-opt {
+  margin-left: auto; display: flex; align-items: center; gap: 5px; cursor: pointer;
+  font-size: 11.5px; color: var(--text-3); white-space: nowrap;
+}
+.tw-opt:hover { color: var(--text-2); }
+.tw-opt input { accent-color: var(--accent); margin: 0; cursor: pointer; }
+
+/* 逐行对照：上行原文（只读、小字），下行译文（可改） */
+.tw-pairs { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 10px; }
+.tw-pair {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 7px 7px; border-radius: var(--r-xs);
+  border: 1px solid transparent; transition: .12s;
+}
+.tw-pair:hover { background: var(--surface-2); border-color: var(--border-2); }
+.tw-pair.off { opacity: .5; }
+.tw-pair-no {
+  flex: 0 0 20px; text-align: right; padding-top: 3px;
+  font: 400 10.5px var(--mono); color: var(--text-3);
+}
+.tw-pair-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tw-pair-src {
+  font-size: 11.5px; line-height: 1.5; color: var(--text-3);
+  word-break: break-word; user-select: text;
+}
+.tw-pair-dst {
+  resize: none; overflow: hidden; width: 100%;
+  background: transparent; border: 0; outline: none; color: var(--text);
+  font: inherit; font-size: 13px; line-height: 1.55; padding: 1px 0;
+}
+.tw-pair-dst::placeholder { color: var(--text-3); }
+/* 缩了字号的行标出来 —— 不然用户只会觉得"字怎么变小了" */
+.tw-pair.fitted .tw-pair-dst { color: var(--warn); }
+.tw-pair-tag {
+  font: 400 10px var(--mono); color: var(--warn);
+  padding: 1px 0 0; opacity: .9;
+}
+.tw-pair input[type="checkbox"] { accent-color: var(--accent); margin: 3px 0 0; cursor: pointer; flex: 0 0 auto; }
+
+/* 发送内容明示：沿用改字视图"把实际发出去的东西亮出来"的做法 */
+.tw-sent { flex: 0 0 auto; font-size: 11px; color: var(--text-3); }
+.tw-sent > summary { cursor: pointer; padding: 2px 0; }
+.tw-sent > summary:hover { color: var(--text-2); }
+.tw-sent pre {
+  margin: 6px 0 0; padding: 7px 9px; max-height: 130px; overflow: auto;
+  font: 400 10.5px/1.55 var(--mono); color: var(--text-2);
+  background: var(--surface-2); border: 1px solid var(--border-2); border-radius: var(--r-xs);
+  white-space: pre-wrap; word-break: break-all;
 }
 
 @media (max-width: 1080px) {

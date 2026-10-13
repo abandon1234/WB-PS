@@ -30,6 +30,23 @@
 - 完整方案：`docs/plan-text-workshop.md`。
 - 已知硬约束：现装 `ch_PP-OCRv3`（中英），翻译第一期只支持中↔英，多语言识别是独立前置任务；
   打码不得宣称"不可还原"；翻译文本必须出境，UI 要明说。
+- **三期都已落地**（取文字 / 打码 / 翻译）。翻译的"重绘"完全复用 `applyEdits()`，
+  **没有新写排版逻辑**，所以按上面的例外判据**不需要双端对拍**：浏览器侧在 `web/text.js`
+  与 `cloudflare/src/routes/text.js`，Python 侧只补 `app/text_translate.py` 同构代理。
+
+## 几个别想当然的接口事实
+
+- **`WBShowImages(key)` 里的 images 是视图容器 `viewImages`（装生成 / 作品库），
+  不是"改字"**。改字在 `viewEdit` 容器里，要跳回来用 `window.WBEdit.show()`。
+  历史上没有"从别的视图跳回改字"的需求，所以只有那一个回喊通道。
+- **provider 的 `text_model` 与 `api_key` 语义相反**：`text_model` 传空串是**有效值**
+  （= 清空，翻译不可用），后端判 `!= null` / `is not None`；`api_key` 传空串才是"不修改"。
+  三处实现（`cloudflare/src/providers.js`、`app/image_gen/config.py`、`web/admin.js`）
+  都写了注释，别顺手加 `||` 兜底。
+- 文字工坊**只有翻译会联网**，且 `/api/text/translate` 的入参只有 `texts[]`、
+  收不到图 —— 这是"图片不出本机"的结构性保证。取文字 / 打码不要为"架构统一"加服务端接口。
+- 无头跑 `tools/probe_*.mjs` 时必须自动放行 `confirm()`（probe 顶部已监听
+  `Page.javascriptDialogOpening`），否则对话框会把脚本挂死。
 
 ## 文字工坊（#text）约定
 

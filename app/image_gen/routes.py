@@ -256,6 +256,7 @@ def admin_create(payload: Dict[str, Any] = Body(...),
             base_url=payload.get("base_url") or "",
             api_key=payload.get("api_key") or "",
             model=payload.get("model") or gen_config.DEFAULT_MODEL,
+            text_model=payload.get("text_model") or "",
             note=payload.get("note") or "",
             enabled=bool(payload.get("enabled", True)),
         )
@@ -275,6 +276,9 @@ def admin_update(pid: str, payload: Dict[str, Any] = Body(...),
             base_url=payload.get("base_url"),
             api_key=payload.get("api_key"),      # 空串 = 不修改
             model=payload.get("model"),
+            # 空串 = **清空**文本模型（与 api_key 的"空串 = 不修改"相反），
+            # config.update_provider 按 is not None 判定；缺字段传 None = 不修改。
+            text_model=payload.get("text_model"),
             note=payload.get("note"),
             enabled=payload.get("enabled"),
         )

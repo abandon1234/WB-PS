@@ -270,4 +270,4 @@ export async function ping(provider, timeout = 30) {
   };
 }
 
-export { MAX_REFERENCES, MAX_REF_BYTES, MAX_PROMPT_LEN, DEFAULT_TIMEOUT, sniffMime };
+export { MAX_REFERENCES, MAX_REF_BYTES, MAX_PROMPT_LEN, DEFAULT_TIMEOUT, sniffMime, extractError };

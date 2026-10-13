@@ -181,6 +181,7 @@ export async function handleAdmin(request, env, path, ctx) {
       providers: await providers.listProviders(env.KV, false),
       active_id: active ? active.id : null,
       default_model: providers.DEFAULT_MODEL,
+      default_text_model: providers.DEFAULT_TEXT_MODEL,
       sizes: providers.ALLOWED_SIZES,
     });
   }
@@ -260,6 +261,7 @@ export async function handleAdmin(request, env, path, ctx) {
       enabled_count: list.filter((p) => p.enabled).length,
       active_name: active ? active.name : null,
       active_model: active ? active.model : null,
+      active_text_model: active ? (active.text_model || null) : null,
       config_file: "cloudflare-kv:providers",
       data_dir_exists: true,
       stores_generated_images: false,

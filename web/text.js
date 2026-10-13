@@ -12,7 +12,8 @@
    改字的 inspector 是重度样式编辑器（字体 / 描边 / 偏移 / 字距），把打码和取文字
    混进去会互相干扰、app.js 会迅速变烂。两者的关系是「工坊批量 → 改字精修」。
 
-   进度：第 1 期（取文字）已接入本地引擎；打码 / 翻译仍是空壳。
+   进度：三期都已接入本地引擎。三个模式共用同一次文字检测（按文件签名缓存），
+   差别是取文字 / 打码只需 detect，翻译要 analyze（拿样式才能按原样式重绘）。
    完整设计与排期见 docs/plan-text-workshop.md。
    ========================================================================== */
 (() => {
@@ -85,6 +86,7 @@ function setMode(id, keyForHash) {
   const m = MODES.find((x) => x.id === id) || MODES[0];
   S.mode = m.id;
   paintMode(m.id);
+  if (m.id === 'translate') checkTrStatus();     // 进翻译就先问一句"能不能用"
 
   if (embeddedBox()) {
     // 嵌入模式：整个视图的显隐交给外层，并且**主动喊一声**。
@@ -156,29 +158,35 @@ function progressText(p) {
   return `${p.label}${pct}…`;
 }
 
-/** 只识别，不分析样式。首次调用会触发模型下载（之后走本机缓存）。
-    onStatus 用来把进度写到**调用方自己的**状态条上（取文字与打码各有一条）。 */
-async function runDetect(file, onStatus) {
+/**
+ * 调本地引擎，并把加载进度接到**调用方自己的**状态条上。
+ *
+ * 临时接管 L.progress、用完还原 —— 不去改 boot.js 的全局 progress，
+ * 免得和改字视图那套状态条互相覆盖。
+ */
+async function callLocal(url, body, onStatus) {
   const L = await localFacade();
   if (!L) throw new Error('本地引擎未就绪，请刷新页面重试');
-
-  // 临时接管进度回调，用完还原 —— 不去改 boot.js 的全局 progress，
-  // 免得和改字视图那套状态条互相覆盖。
   const prev = L.progress;
   L.progress = (p) => {
     if (typeof prev === 'function') { try { prev(p); } catch (_) {} }
     if (onStatus) onStatus(progressText(p));
   };
   try {
-    const fd = new FormData();
-    fd.append('file', file, file.name || 'image.png');
-    fd.append('merge_lines', 'true');
-    const res = await L.handle(DETECT_URL, fd);
-    if (!res) throw new Error('本地引擎未提供取文字能力，请刷新页面重试');
-    return res;
+    return await L.handle(url, body);
   } finally {
     L.progress = prev;
   }
+}
+
+/** 只识别，不分析样式。首次调用会触发模型下载（之后走本机缓存）。 */
+async function runDetect(file, onStatus) {
+  const fd = new FormData();
+  fd.append('file', file, file.name || 'image.png');
+  fd.append('merge_lines', 'true');
+  const res = await callLocal(DETECT_URL, fd, onStatus);
+  if (!res) throw new Error('本地引擎未提供取文字能力，请刷新页面重试');
+  return res;
 }
 
 /* 取文字与打码共用同一次检测：同一张图在两个模式之间切换不该重跑一遍
@@ -543,10 +551,13 @@ const baseName = (name) =>
 /* ------------------------------------------------------------------ 通用交互 */
 
 /**
- * 取文字与打码共用的「选图 / 拖拽 / 适应窗口」这一层。
- * onFile 是各自的主流程（一个去做识别，一个去做识别 + 规则匹配）。
+ * 取文字 / 打码 / 翻译共用的「选图 / 拖拽 / 适应窗口」这一层。
+ * onFile 是各自的主流程（取文字只识别、打码再加规则匹配、翻译走 analyze）。
+ *
+ * opts.onLoad 用来换掉"图解码完就适应窗口"这个默认行为 —— 翻译模式要在
+ * 原图与译文图之间换 src，每次换都重新适应会把用户手动定的比例冲掉。
  */
-function wireCommon(els, zoom, onFile) {
+function wireCommon(els, zoom, onFile, opts = {}) {
   const input = $(els.input);
   const canvas = $(els.canvas);
   if (!input || !canvas) return;
@@ -577,7 +588,7 @@ function wireCommon(els, zoom, onFile) {
   // 图解码完 → 先按「适应窗口」缩好再亮出来（配合 showImage 里的 visibility）
   const img = $(els.img);
   img.addEventListener('load', () => {
-    zoom.setFit();
+    if (opts.onLoad) opts.onLoad(img); else zoom.setFit();
     img.style.visibility = '';
   });
   // 解码失败也要把图亮回来（否则画布一直空着，看起来像卡住）
@@ -1172,6 +1183,483 @@ function wireMaskMode() {
   wireMarquee();
 }
 
+/* ==================================================================== */
+/* 第 3 期 · 翻译                                                        */
+/* ----------------------------------------------------------------------
+   与取文字 / 打码最大的不同：这一步**必须拿样式**，因为译文要按原样式画回去。
+   所以走 /api/analyze（detect + 样式分析 + 建会话），而不是 /api/text/detect。
+
+   重绘这一层**一行新代码都没有**：译文写进 edit.text，交给现有的 applyEdits()
+   —— 擦除、字体匹配、描边校准、过宽缩字号（editParams 里的 auto_fit /
+   font_scale）全是改字视图在用的同一套。这也是当初把翻译排在第三期的原因。
+   ==================================================================== */
+
+const TR_ELS = {
+  canvas: 'trCanvas', img: 'trImg', drop: 'trDrop',
+  imgBox: 'trImgBox', zoom: 'trZoom', status: 'trStatus',
+  input: 'trInput', pick: 'trPick', pickText: 'trPickText',
+  name: 'trName', meta: 'trMeta',
+};
+
+const TR = {
+  file: null, name: '', objectUrl: '',
+  imgW: 0, imgH: 0,
+  sessionId: '',
+  items: null,          // /api/analyze 的结果（含 style，重绘要用）
+  pairs: [],            // [{ id, src, dst, on, fitted, warn, applied }]
+  from: 'zh', to: 'en',
+  autoFit: true,
+  view: 'source',       // source | result
+  outUrl: '',           // 重绘结果（data URL）
+  busy: false,
+  fittedOnce: false,    // 只在第一张图 load 时「适应窗口」，换译文图时保持比例
+  elapsed: null,
+  model: '',
+  serverReady: null,    // /api/text/status 的结论：null 还没探、false 明确不可用
+  serverMsg: '',
+};
+
+/* 两个模式的元素 id 一组一份 */
+const trZoom = createZoom({
+  canvas: 'trCanvas', img: 'trImg', fit: 'trFit',
+  zin: 'trZoomIn', zout: 'trZoomOut', val: 'trZoomVal',
+});
+
+/* ------------------------------------------------------------ 展示 */
+
+/** 原图 / 译文图切换：两张图尺寸必然一致，直接换 src 最省事 */
+function switchTrView(v) {
+  const img = $('trImg');
+  if (!TR.outUrl) v = 'source';
+  TR.view = v;
+  const host = $('trView');
+  if (host) host.querySelectorAll('.tw-tbtn').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
+  if (!img || !TR.objectUrl) return;
+  const want = (v === 'result' && TR.outUrl) ? TR.outUrl : TR.objectUrl;
+  if (img.src !== want) img.src = want;
+}
+
+function trApplied() {
+  return TR.pairs.filter((p) => p.on !== false && p.applied).length;
+}
+
+function updateTrStats() {
+  const el = $('trStats');
+  if (!el) return;
+  if (!TR.items) { el.textContent = '翻译结果'; return; }
+  const bits = [`${TR.items.length} 行`];
+  const done = TR.pairs.filter((p) => String(p.dst || '').trim()).length;
+  if (done) bits.push(`已译 ${done}`);
+  const fit = TR.pairs.filter((p) => p.fitted).length;
+  if (fit) bits.push(`缩字号 ${fit}`);
+  if (TR.elapsed != null) bits.push(`翻译 ${TR.elapsed}ms`);
+  el.textContent = bits.join(' · ');
+}
+
+function setTrButtons() {
+  const hasItems = !!(TR.items && TR.items.length);
+  const n = trApplied();
+  const dis = (id, v) => { const b = $(id); if (b) b.disabled = v; };
+  dis('trRunBtn', !hasItems || TR.busy);
+  dis('trSwapBtn', !hasItems || TR.busy);
+  dis('trSavePng', n === 0);
+  dis('trSaveJpg', n === 0);
+  dis('trToEdit', n === 0);
+  const v = $('trView');
+  if (v) v.hidden = !TR.outUrl;
+}
+
+function renderTrPairs() {
+  const host = $('trPairs');
+  if (!host) return;
+  if (!TR.pairs.length) {
+    host.innerHTML = `<p class="tw-side-empty">${TR.file
+      ? '没有识别到文字。换一张更清晰的图试试（文字太小、太糊都会识别不到）'
+      : '上传图片后会列出识别到的每一行，翻译后可逐行修改'}</p>`;
+    return;
+  }
+  host.innerHTML = TR.pairs.map((p, i) => `
+    <div class="tw-pair${p.on === false ? ' off' : ''}${p.fitted ? ' fitted' : ''}" data-i="${i}">
+      <input type="checkbox" ${p.on === false ? '' : 'checked'} aria-label="是否翻译这一行">
+      <span class="tw-pair-no">${i + 1}</span>
+      <div class="tw-pair-body">
+        <span class="tw-pair-src">${esc(p.src)}</span>
+        <textarea class="tw-pair-dst" rows="1" spellcheck="false"
+          placeholder="（未翻译）" aria-label="第 ${i + 1} 行译文">${esc(p.dst)}</textarea>
+        ${p.fitted ? `<span class="tw-pair-tag">${esc(p.warn || '已缩小字号以放进原位')}</span>` : ''}
+      </div>
+    </div>`).join('');
+
+  host.querySelectorAll('.tw-pair').forEach((el) => {
+    const i = Number(el.dataset.i);
+    const p = TR.pairs[i];
+    const cb = el.querySelector('input[type="checkbox"]');
+    const ta = el.querySelector('textarea');
+    autosize(ta);
+
+    // 逐字改写不重渲染（重渲染会把光标挤掉），只回写状态 + 去抖重绘
+    ta.addEventListener('input', () => {
+      autosize(ta);
+      p.dst = ta.value;
+      p.fitted = false; p.warn = '';    // 换了译文，之前的缩字号结论作废
+      el.classList.remove('fitted');
+      updateTrStats();
+      scheduleTrApply();
+    });
+    ta.addEventListener('mouseenter', () => hoverTrPair(i, true));
+    ta.addEventListener('mouseleave', () => hoverTrPair(i, false));
+
+    cb.addEventListener('change', () => {
+      p.on = cb.checked;
+      el.classList.toggle('off', !cb.checked);
+      updateTrStats();
+      scheduleTrApply();
+    });
+  });
+}
+
+/** 悬停某一行的译文 → 高亮对应的原文（反过来也一样） */
+function hoverTrPair(i, on) {
+  const el = $('trPairs') && $('trPairs').querySelector(`.tw-pair[data-i="${i}"]`);
+  if (el) el.classList.toggle('hover', on);
+}
+
+/**
+ * 改译文后重绘的防抖。
+ * apply 要走一遍擦除 + 重绘（几百 ms 量级），逐字触发会一直排队；
+ * 但也不能等太久 —— 用户改完一个字就想看到画布变了。
+ */
+let trApplyTimer = 0;
+function scheduleTrApply() {
+  clearTimeout(trApplyTimer);
+  trApplyTimer = setTimeout(() => {
+    applyTranslation().catch((err) => {
+      setStatus(TR_ELS.status, `重绘失败：${String((err && err.message) || err)}`, 'err');
+    });
+  }, 650);
+}
+
+/* ------------------------------------------------------------ 翻译请求 */
+
+/* 一次打包多少行。上游一个请求翻太多行时容易漏行 / 被截断，
+   所以分批；某一批对不上行数就自动降半批重试（见 translateChunk）。 */
+const TR_CHUNK = 30;
+const TR_MAX_DEPTH = 3;
+
+async function reqTranslate(texts) {
+  const r = await fetch('/api/text/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texts, from: TR.from, to: TR.to }),
+  });
+  const txt = await r.text();
+  let j = null;
+  try { j = txt ? JSON.parse(txt) : null; } catch (_) { /* 下面统一报可读文案 */ }
+  if (!r.ok) {
+    // detail 可能是对象 {message,hint}（对齐 Python 侧形状），取可读字段
+    let m = j && (j.detail || j.message);
+    if (m && typeof m === 'object') m = m.message || m.hint || '';
+    throw new Error(m || `HTTP ${r.status}`);
+  }
+  if (!j || !Array.isArray(j.texts) || j.texts.length !== texts.length) {
+    throw new Error('译文行数与原文对不上');
+  }
+  if (j.model) TR.model = j.model;
+  return j.texts.map((t) => (t == null ? '' : String(t)));
+}
+
+/**
+ * 翻一批，失败就劈成两半各翻一次。
+ * 为什么值得这么写：行数对不上是这类调用最常见的失败（模型漏行、被截断），
+ * 而"整批重来"在 30 行时几乎必然再失败一次 —— 降半批能很快落到能成功的粒度，
+ * 代价只是多几次往返。
+ */
+async function translateChunk(texts, depth = 0) {
+  try {
+    return await reqTranslate(texts);
+  } catch (err) {
+    if (texts.length <= 1 || depth >= TR_MAX_DEPTH) throw err;
+    const mid = Math.ceil(texts.length / 2);
+    const a = await translateChunk(texts.slice(0, mid), depth + 1);
+    const b = await translateChunk(texts.slice(mid), depth + 1);
+    return [...a, ...b];
+  }
+}
+
+/* ------------------------------------------------------------ 重绘 */
+
+/** 把当前译文整理成 applyEdits 认的 edits 结构 */
+function buildTrEdits() {
+  const edits = {};
+  for (const p of TR.pairs) {
+    if (p.on === false) continue;
+    const t = String(p.dst || '');
+    if (!t.trim()) continue;
+    // 只放 text 与 auto_fit，其余（字体 / 颜色 / 描边）一律交给引擎按原样式推断
+    edits[String(p.id)] = { text: t, auto_fit: TR.autoFit };
+  }
+  return edits;
+}
+
+/**
+ * 译文写回 → 复用 /api/apply（内部就是 applyEdits）。
+ * 结果图整张换掉左侧的 <img>，所以"看到的"就是"导出的"。
+ */
+async function applyTranslation() {
+  if (!TR.sessionId || !TR.items) return null;
+  const edits = buildTrEdits();
+  const ids = Object.keys(edits);
+  if (!ids.length) {
+    TR.outUrl = '';
+    for (const p of TR.pairs) { p.applied = false; p.fitted = false; p.warn = ''; }
+    switchTrView('source');
+    renderTrPairs(); updateTrStats(); setTrButtons();
+    return null;
+  }
+
+  const res = await callLocal('/api/apply', { session_id: TR.sessionId, edits });
+  if (!res || !res.image) throw new Error('本地引擎未提供重绘能力，请刷新页面重试');
+
+  TR.outUrl = res.image;
+  const byId = new Map(((res.stats && res.stats.log) || []).map((r) => [String(r.id), r]));
+  for (const p of TR.pairs) {
+    const r = byId.get(String(p.id));
+    p.applied = !!(r && (r.action === 'replace' || r.action === 'insert'));
+    p.fitted = !!(r && r.fitted);
+    p.warn = (r && r.warnings && r.warnings.length) ? String(r.warnings[0]) : '';
+    if (r && r.action === 'error') { p.applied = false; p.warn = '重绘失败：' + String(r.error || '').slice(0, 80); }
+  }
+  switchTrView('result');
+  renderTrPairs(); updateTrStats(); setTrButtons();
+  return res;
+}
+
+/* ------------------------------------------------------------ 可用性探测 */
+
+/* 数据来源：/api/text/status。服务端（Worker 或本地 Python）会回"有没有配
+   text_model"。**只探一次**，且失败时静默 —— 纯静态托管下这个接口不存在，
+   提示一句"翻译不可用"只会让用户以为整个页面坏了；真正的失败留给点翻译时报。 */
+let trStatusChecked = false;
+async function checkTrStatus() {
+  if (trStatusChecked) return;
+  trStatusChecked = true;
+  try {
+    const r = await fetch('/api/text/status');
+    if (!r.ok) return;
+    const j = await r.json();
+    TR.serverReady = !!j.ready;
+    TR.serverMsg = j.ready ? '' : [j.message, j.hint].filter(Boolean).join('　');
+    // 只在"正停在翻译页签、还没选图、也不在忙"时提示 —— 否则会盖掉识别进度
+    if (!j.ready && S.mode === 'translate' && !TR.busy && !TR.file) {
+      setStatus(TR_ELS.status, `翻译暂不可用：${TR.serverMsg}`, 'err');
+    }
+  } catch (_) { /* 离线 / 静态托管：不打扰 */ }
+}
+
+/** 识别完把状态条恢复成空 —— 但翻译本来就用不了时，把原因继续留在那儿 */
+function clearTrStatus() {
+  if (TR.serverReady === false && TR.serverMsg) {
+    setStatus(TR_ELS.status, `翻译暂不可用：${TR.serverMsg}`, 'err');
+    return;
+  }
+  setStatus(TR_ELS.status, '');
+}
+
+/* ------------------------------------------------------------ 主流程 */
+
+async function handleTrFile(file) {
+  if (!file) return;
+  if (!/^image\//.test(file.type || '')) { setStatus(TR_ELS.status, '请选择图片文件（JPG / PNG / WebP）', 'err'); return; }
+  if (TR.busy) return;
+
+  TR.busy = true;
+  TR.file = file;
+  TR.name = file.name || 'image';
+  TR.sessionId = '';
+  TR.items = null;
+  TR.pairs = [];
+  TR.outUrl = '';
+  TR.elapsed = null;
+  TR.fittedOnce = false;
+  $(TR_ELS.name).textContent = TR.name;
+  $(TR_ELS.meta).textContent = '';
+  $(TR_ELS.pickText).textContent = '换一张';
+  const sentBox = $('trSentBox');
+  if (sentBox) { sentBox.hidden = true; sentBox.open = false; }
+  showImage(file, TR_ELS, trZoom, TR);
+  renderTrPairs(); updateTrStats(); setTrButtons();
+  setStatus(TR_ELS.status, '正在识别…', 'busy');
+
+  try {
+    // 走 /api/analyze（而不是取文字用的 /api/text/detect）：翻译要按原样式重绘，
+    // 必须拿字体 / 颜色 / 描边 / 字号，同时它会建会话给后面的 /api/apply 用。
+    const fd = new FormData();
+    fd.append('file', file, TR.name);
+    fd.append('merge_lines', 'true');
+    const res = await callLocal('/api/analyze', fd, (m) => setStatus(TR_ELS.status, m, 'busy'));
+    if (!res || !res.session_id) throw new Error('本地引擎未提供识别能力，请刷新页面重试');
+
+    TR.sessionId = res.session_id;
+    TR.items = res.items || [];
+    TR.imgW = res.width || 0;
+    TR.imgH = res.height || 0;
+    TR.pairs = TR.items.map((it) => ({
+      id: it.id, src: it.text || '', dst: '', on: true, fitted: false, warn: '', applied: false,
+    }));
+
+    $(TR_ELS.meta).textContent = `${res.width}×${res.height}`
+      + (res.elapsed_ms != null ? ` · 识别 ${res.elapsed_ms}ms` : '');
+    renderTrPairs(); updateTrStats(); setTrButtons();
+    if (TR.items.length) clearTrStatus();
+    else setStatus(TR_ELS.status, '没有识别到文字', 'err');
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    const waiting = window.WBLocal && !window.WBLocal.ready && !window.WBLocal.error;
+    setStatus(TR_ELS.status, waiting ? `本地引擎准备中… ${msg}` : `识别失败：${msg}`, 'err');
+  } finally {
+    TR.busy = false;
+    setTrButtons();
+  }
+}
+
+async function runTranslate() {
+  if (TR.busy || !TR.items) return;
+  const targets = TR.pairs.filter((p) => p.on !== false && String(p.src || '').trim());
+  if (!targets.length) { setStatus(TR_ELS.status, '没有需要翻译的文字', 'err'); return; }
+
+  TR.busy = true;
+  setTrButtons();
+  const t0 = performance.now();
+  const sent = [];
+  try {
+    for (let i = 0; i < targets.length; i += TR_CHUNK) {
+      const slice = targets.slice(i, i + TR_CHUNK);
+      setStatus(TR_ELS.status,
+        `正在翻译… ${i} / ${targets.length}（首批要连上游，稍慢）`, 'busy');
+      const out = await translateChunk(slice.map((p) => p.src));
+      slice.forEach((p, k) => { p.dst = out[k]; });
+      sent.push(...slice.map((p) => p.src));
+    }
+    TR.elapsed = Math.round(performance.now() - t0);
+
+    // 把**实际发出去的文字**亮出来（沿用改字视图的先例：不藏着）
+    const box = $('trSentBox');
+    const pre = $('trSent');
+    if (box && pre) {
+      pre.textContent = sent.map((t, i) => `${i + 1}. ${t}`).join('\n');
+      box.hidden = false;
+    }
+
+    setStatus(TR_ELS.status, '正在按原样式重绘…', 'busy');
+    await applyTranslation();
+    setStatus(TR_ELS.status, '');
+  } catch (err) {
+    setStatus(TR_ELS.status, `翻译失败：${String((err && err.message) || err)}`, 'err');
+  } finally {
+    TR.busy = false;
+    renderTrPairs(); updateTrStats(); setTrButtons();
+  }
+}
+
+/** 交换方向：清掉已有译文并按新方向重翻 —— 比"让用户自己再点一次"顺手 */
+async function swapTrLangs() {
+  const a = TR.from; TR.from = TR.to; TR.to = a;
+  const f = $('trFrom'), t = $('trTo');
+  if (f) f.value = TR.from;
+  if (t) t.value = TR.to;
+  for (const p of TR.pairs) { p.dst = ''; p.fitted = false; p.warn = ''; p.applied = false; }
+  TR.outUrl = '';
+  switchTrView('source');
+  renderTrPairs(); updateTrStats(); setTrButtons();
+  if (TR.items && TR.items.length) await runTranslate();
+}
+
+/* ------------------------------------------------------------ 导出 / 交接 */
+
+async function exportTr(fmt) {
+  if (!TR.outUrl) return;
+  const img = await loadImgEl(TR.outUrl);
+  const cv = document.createElement('canvas');
+  cv.width = img.naturalWidth;
+  cv.height = img.naturalHeight;
+  const ctx = cv.getContext('2d');
+  if (fmt === 'jpg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); }
+  ctx.drawImage(img, 0, 0);
+  const mime = fmt === 'jpg' ? 'image/jpeg' : 'image/png';
+  const blob = await new Promise((res) => cv.toBlob(res, mime, 0.92));
+  if (!blob) { setStatus(TR_ELS.status, '导出失败：浏览器不支持该格式', 'err'); return; }
+  saveBlob(blob, `${baseName(TR.name)}-译文.${fmt}`);
+}
+
+/**
+ * 把这张图与译文交给「无痕改字」继续精修。
+ *
+ * 走的是 app.js 已有的本机工作区（workspace.js 的 TextWS）：把原图字节 +
+ * 会话 id + items + edits 落盘，再切视图并让它重读一次。
+ * 之所以能这么省事：识别用的是同一个会话，item id 天然对得上，
+ * remapEdits 那层兜底都不需要用上。
+ */
+async function sendToEdit() {
+  const edits = buildTrEdits();
+  if (!TR.file || !TR.items || !Object.keys(edits).length) return;
+  if (!window.TextWS) { setStatus(TR_ELS.status, '本机存储不可用，无法交接', 'err'); return; }
+  try {
+    setStatus(TR_ELS.status, '正在交接给「无痕改字」…', 'busy');
+    const buf = await TR.file.arrayBuffer();
+    await TextWS.saveImage(buf, TR.file.type || 'image/png', TR.name);
+    await TextWS.saveState({
+      sessionId: TR.sessionId,
+      fileName: TR.name,
+      backend: 'browser-wasm',
+      items: TR.items,
+      edits,
+    });
+    setStatus(TR_ELS.status, '');
+    // 先切视图再让它重读 —— 顺序反过来的话，restoreWorkspace 会把状态条
+    // 写到改字视图上，而那时改字视图还没显示出来。
+    if (window.WBEdit) {
+      if (window.WBEdit.show) window.WBEdit.show();
+      if (window.WBEdit.reload) await window.WBEdit.reload();
+    }
+  } catch (err) {
+    setStatus(TR_ELS.status, `交接失败：${String((err && err.message) || err)}`, 'err');
+  }
+}
+
+function wireTranslateMode() {
+  wireCommon(TR_ELS, trZoom, handleTrFile, {
+    // 换译文图时不要重新适应窗口，否则用户刚放大的地方会被弹回去
+    onLoad: () => { if (!TR.fittedOnce) { trZoom.setFit(); TR.fittedOnce = true; } },
+  });
+
+  const run = $('trRunBtn');
+  if (run) run.addEventListener('click', () => runTranslate());
+  const sw = $('trSwapBtn');
+  if (sw) sw.addEventListener('click', () => swapTrLangs());
+
+  const f = $('trFrom'), t = $('trTo');
+  if (f) f.addEventListener('change', () => { TR.from = f.value; });
+  if (t) t.addEventListener('change', () => { TR.to = t.value; });
+  const fit = $('trAutoFit');
+  if (fit) fit.addEventListener('change', () => {
+    TR.autoFit = fit.checked;
+    if (TR.outUrl) scheduleTrApply();
+  });
+
+  const vh = $('trView');
+  if (vh) vh.querySelectorAll('.tw-tbtn').forEach((b) => {
+    b.addEventListener('click', () => switchTrView(b.dataset.v));
+  });
+
+  const png = $('trSavePng');
+  if (png) png.addEventListener('click', () => exportTr('png'));
+  const jpg = $('trSaveJpg');
+  if (jpg) jpg.addEventListener('click', () => exportTr('jpg'));
+
+  const te = $('trToEdit');
+  if (te) te.addEventListener('click', () => sendToEdit());
+}
+
 /* 嵌进主页面时，把"显示哪个模式"的能力暴露出去，由 app.js 的视图路由按 hash 调用。
    视图内部的状态仍归本模块管。
 
@@ -1183,9 +1671,14 @@ window.WBText = {
   get mode() { return S.mode; },
   get copy() { return COPY; },
   get mask() { return MASK; },
+  get translate() { return TR; },
   text() { return COPY.result ? COPY.result.text : ''; },
   markdown() { return COPY.result ? COPY.result.markdown : ''; },
   lines() { return COPY.result ? COPY.result.lines.map((l) => l.text) : []; },
+  // 翻译用：当前译文图是不是已经生成、逐行对照的数据是什么（自检与调试用）
+  trPairs() { return TR.pairs.map((p) => ({ id: p.id, src: p.src, dst: p.dst, on: p.on, fitted: p.fitted })); },
+  trEdits() { return buildTrEdits(); },
+  runTranslate() { return runTranslate(); },
   // 自检用：直接读遮盖层像素，判断"某一处到底盖住没有"
   maskPixel(x, y) {
     const cv = $('maskCv'), img = $('maskImg');
@@ -1208,8 +1701,16 @@ function boot() {
   const initial = modeOfKey(h);       // 非本视图的 hash 会落到默认模式，正好
   S.mode = initial;
   paintMode(initial);
+  // 深链直接落在翻译模式时也要探一次（这条路不走 setMode）
+  if (initial === 'translate') checkTrStatus();
   wireCopyMode();
   wireMaskMode();
+  wireTranslateMode();
+  // 语言方向与开关的初值以 DOM 为准（HTML 里写的就是默认值），
+  // 免得 JS 里再写一份默认值、两处迟早对不上。
+  if ($('trFrom')) TR.from = $('trFrom').value;
+  if ($('trTo')) TR.to = $('trTo').value;
+  if ($('trAutoFit')) TR.autoFit = $('trAutoFit').checked;
   // 纯函数层提前备好：等用户拖图时就不用再等一次网络往返
   loadExtract().catch(() => {});
   loadMask().then(() => {

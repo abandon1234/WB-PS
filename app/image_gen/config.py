@@ -21,6 +21,9 @@ DATA_DIR = os.path.join(ROOT, "data")
 CONFIG_FILE = os.path.join(DATA_DIR, "image_providers.json")
 
 DEFAULT_MODEL = "gpt-image-2"
+# 翻译用的对话模型。留空 = 图片翻译明确报"未配置文本模型"（生图模型做不了翻译，
+# 随便给个默认值只会让用户拿到一堆看不懂的上游报错）。
+DEFAULT_TEXT_MODEL = ""
 DEFAULT_SIZE = "1024x1024"
 ALLOWED_SIZES = ("1024x1024", "1536x1024", "1024x1536", "auto", "512x512", "1792x1024", "1024x1792")
 
@@ -32,6 +35,7 @@ _SEED = {
     "base_url": "https://code.linlong520.com",
     "api_key": "",
     "model": DEFAULT_MODEL,
+    "text_model": DEFAULT_TEXT_MODEL,
     "note": "",
 }
 
@@ -85,6 +89,14 @@ def _clean_model(model: str) -> str:
     m = (model or "").strip() or DEFAULT_MODEL
     if len(m) > 120:
         raise ValueError("模型名过长")
+    return m
+
+
+def _clean_text_model(model: str) -> str:
+    """文本模型允许留空（= 翻译未配置），所以不能沿用 _clean_model 的默认值。"""
+    m = (model or "").strip()
+    if len(m) > 120:
+        raise ValueError("文本模型名过长")
     return m
 
 
@@ -162,6 +174,7 @@ def active_provider() -> Optional[Dict[str, Any]]:
 
 def add_provider(name: str, base_url: str, api_key: str,
                  model: str = DEFAULT_MODEL, note: str = "",
+                 text_model: str = DEFAULT_TEXT_MODEL,
                  enabled: bool = True) -> Dict[str, Any]:
     item = {
         "id": uuid.uuid4().hex[:12],
@@ -169,6 +182,7 @@ def add_provider(name: str, base_url: str, api_key: str,
         "base_url": _clean_base_url(base_url),
         "api_key": (api_key or "").strip(),
         "model": _clean_model(model),
+        "text_model": _clean_text_model(text_model),
         "note": (note or "").strip()[:200],
         "enabled": bool(enabled),
         "created_at": round(time.time(), 1),
@@ -201,6 +215,10 @@ def update_provider(pid: str, **fields) -> Dict[str, Any]:
                 p["api_key"] = fields["api_key"].strip()
             if "model" in fields and fields["model"]:
                 p["model"] = _clean_model(fields["model"])
+            # 空串在这里是**有效值**（= 清空文本模型），与 api_key 的语义相反，
+            # 所以判的是 is not None 而不是真值。
+            if fields.get("text_model") is not None:
+                p["text_model"] = _clean_text_model(fields["text_model"])
             if "note" in fields and fields["note"] is not None:
                 p["note"] = (fields["note"] or "").strip()[:200]
             if "enabled" in fields and fields["enabled"] is not None:
