@@ -12,6 +12,7 @@
 import { imageDataToBgrMat, matToImageData } from './cvutil.js';
 import { rm } from './cvutil.js';
 import { detect, analyze, applyEdits, previewItem, detectMaskRegion } from './index.js';
+import { erase } from './erase.js';
 import { analyzeMany } from './style.js';
 
 const MAX_SESSIONS = 3;
@@ -46,6 +47,37 @@ function dataUrlBytes(dataUrl) {
   return Math.round(body.length * 0.75);
 }
 
+/**
+ * 擦完还剩多少起伏：区域内的灰度标准差。
+ *
+ * ⚠️ 刻意**不用** erase 返回的 meta.residual —— 那是「内区边缘能量 ÷ 外圈边缘
+ * 能量」，在纯色背景上分母被下限 0.5 托住、而内区边界本身的 Laplacian 就
+ * 天然有响应，值恒定在 100 量级（实测一张纯白底黑字的图也是 100+），
+ * 对"擦干净没有"没有判别力。灰度标准差直白：擦净 → 接近 0，留残影 → 抬高。
+ */
+function leftoverStd(cv, mat, rect) {
+  const x0 = Math.max(0, Math.round(rect.x));
+  const y0 = Math.max(0, Math.round(rect.y));
+  const x1 = Math.min(mat.cols, Math.round(rect.x + rect.w));
+  const y1 = Math.min(mat.rows, Math.round(rect.y + rect.h));
+  if (x1 - x0 < 3 || y1 - y0 < 3) return 0;
+  const gray = new cv.Mat();
+  let sub = null, mean = null, std = null;
+  try {
+    cv.cvtColor(mat, gray, cv.COLOR_BGR2GRAY);
+    sub = gray.roi(new cv.Rect(x0, y0, x1 - x0, y1 - y0));
+    mean = new cv.Mat();
+    std = new cv.Mat();
+    cv.meanStdDev(sub, mean, std);
+    return std.data64F[0];
+  } finally {
+    if (sub) sub.delete();
+    if (mean) mean.delete();
+    if (std) std.delete();
+    gray.delete();
+  }
+}
+
 export class LocalApi {
   constructor(engine) {
     this.engine = engine;
@@ -62,6 +94,7 @@ export class LocalApi {
       if (url === '/api/fonts/scan') return await this.fontsScan();
       if (url === '/api/analyze') return await this.analyze(body);
       if (url === '/api/text/detect') return await this.textDetect(body);
+      if (url === '/api/text/erase') return await this.textErase(body);
       if (url === '/api/preview') return await this.preview(body);
       if (url === '/api/preview-batch') return await this.previewBatch(body);
       if (url === '/api/apply') return await this.apply(body);
@@ -171,6 +204,67 @@ export class LocalApi {
       items,
       elapsed_ms: Math.round(performance.now() - t0),
     };
+  }
+
+  /**
+   * 打码用的「抹字」通道：把若干矩形区域里的文字擦掉、保留背景。
+   *
+   * 与 textDetect 一样是**无会话**的：传图进来、返回结果图，不常驻内存
+   * （打码不改文字，不需要 analyze 那套 session 模型）。
+   *
+   * 擦除本身交给 erase.js —— 它内部会按背景类型选策略、并逐轮加大掩膜
+   * 直到区域边缘能量降到背景水平，所以这里只回答「擦哪里」，不管「怎么擦」。
+   * 一次请求擦完所有框（逐个串联，每次都基于上一轮的结果），
+   * 避免前端为 N 个框来回 N 次解码整图。
+   */
+  async textErase(fd) {
+    const file = fd.get('file');
+    if (!file || typeof file === 'string') throw new Error('缺少图片文件');
+    let rects = [];
+    try { rects = JSON.parse(String(fd.get('rects') || '[]')); } catch (_) { rects = []; }
+    if (!Array.isArray(rects) || !rects.length) throw new Error('没有需要擦除的区域');
+    const method = String(fd.get('method') || 'auto');
+
+    const t0 = performance.now();
+    const { imageData } = await blobToImageData(file);
+    const cv = this.engine.cv;
+    let cur = imageDataToBgrMat(cv, imageData);
+    const details = [];
+    try {
+      for (const r of rects) {
+        const rect = {
+          x: Number(r.x) || 0, y: Number(r.y) || 0,
+          w: Math.max(1, Number(r.w) || 1), h: Math.max(1, Number(r.h) || 1),
+        };
+        // grow 从默认 2 提到 3：OCR 的框常紧贴字形，膨胀不够时笔画边缘与
+        // 抗锯齿会留一圈残影（实测粗笔画的中文字尤其明显）。再多就会啃到
+        // 相邻文字，所以停在这个量级。
+        const res = erase(cv, cur, rect, null, { method, grow: 3 });
+        const prev = cur;
+        cur = res.image;                 // erase 返回新 Mat，原图不动
+        if (prev !== cur) rm(prev);
+        details.push({ meta: res.meta, left: leftoverStd(cv, cur, rect) });
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = cur.cols;
+      canvas.height = cur.rows;
+      canvas.getContext('2d').putImageData(matToImageData(cv, cur), 0, 0);
+      return {
+        image: canvas.toDataURL('image/png'),
+        width: cur.cols,
+        height: cur.rows,
+        count: details.length,
+        methods: details.map((d) => d.meta.method),
+        // 每块擦完后区域内还剩多少起伏（灰度标准差，0~约 128）。
+        // 前端据此提示用户改用色块 —— 抹字留了残影而用户不知道，
+        // 比不盖更糟，所以这一项宁可多提示。
+        leftovers: details.map((d) => Math.round(d.left * 10) / 10),
+        elapsed_ms: Math.round(performance.now() - t0),
+      };
+    } finally {
+      rm(cur);
+    }
   }
 
   async preview(body) {

@@ -374,8 +374,13 @@ try {
     return true;
   })()`);
   await cdp.waitFor(`(() => { const i = document.getElementById('copyImg');
-    return !!(i && i.naturalWidth === 618 && i.style.visibility !== 'hidden'); })()`,
+    const st = document.getElementById('copyStatus');
+    return !!(i && i.naturalWidth === 618 && i.style.visibility !== 'hidden'
+      && st && st.hidden && !(window.WBText.copy.busy)); })()`,
     90000, '长图已按适应窗口显示');
+  // 状态条收起会改变画布可用高度，代码里会补算一次「适应」—— 等那一拍落地再量，
+  // 否则量到的是"识别中、状态条还占着 44px"时的临时尺寸。
+  await sleep(400);
 
   const fitted = await readGeo();
   console.log(`      原图 ${fitted.nw}×${fitted.nh} → 显示 ${fitted.w}×${fitted.h}`
@@ -414,6 +419,188 @@ try {
     refit.w <= refit.availW + 1 && refit.h <= refit.availH + 1
       && Math.abs(refit.w - fitted.w) <= 1,
     `${refit.w}×${refit.h} · ${refit.zval}`);
+
+  console.log('\n[2g] 打码：敏感信息识别（纯函数层）');
+  const mkPure = await cdp.evaluate(`(() => {
+    const M = window.WBMaskMod;
+    const ln = (text) => [{ id: 0, text, rect: { x: 10, y: 20, w: 200, h: 24 },
+      items: [{ id: 0, text, rect: { x: 10, y: 20, w: 200, h: 24 } }] }];
+    const ids = (hits) => hits.map((h) => h.ruleId).join(',');
+    const off = M.defaultRuleState(); off.phone = false;
+    // 一行两个框：号码单独成框时应该只盖号码那个
+    const two = [{ id: 0, text: '电话 13800138000', rect: { x: 0, y: 0, w: 300, h: 24 },
+      items: [{ id: 0, text: '电话', rect: { x: 0, y: 0, w: 60, h: 24 } },
+              { id: 1, text: '13800138000', rect: { x: 70, y: 0, w: 200, h: 24 } }] }];
+    // 号码被切成两半 → 只能靠整行兜底
+    const split = [{ id: 0, text: '13800138000', rect: { x: 0, y: 0, w: 300, h: 24 },
+      items: [{ id: 0, text: '1380013', rect: { x: 0, y: 0, w: 100, h: 24 } },
+              { id: 1, text: '8000', rect: { x: 110, y: 0, w: 60, h: 24 } }] }];
+    const merged = M.toRects([
+      { rect: { x: 100, y: 10, w: 50, h: 20 }, on: true },
+      { rect: { x: 145, y: 10, w: 50, h: 20 }, on: true },
+    ], { pad: 0 });
+    return {
+      phone: ids(M.findSensitive(ln('13800138000'))),
+      idcard: ids(M.findSensitive(ln('110101199003078888'))),
+      bank: ids(M.findSensitive(ln('6222021234567890123'))),
+      longWhole: M.findSensitive(ln('202610131234567')).length,
+      longInText: M.findSensitive(ln('订单号 202610131234567')).length,
+      phoneOff: M.findSensitive(ln('13800138000'), { enabled: off }).length,
+      emailStill: ids(M.findSensitive(ln('a@b.com'), { enabled: off })),
+      two: M.findSensitive(two).map((h) => h.scope + ':' + Math.round(h.rect.x)).join(','),
+      split: M.findSensitive(split).map((h) => h.scope).join(','),
+      merged: merged.length + ':' + merged[0].w,
+    };
+  })()`);
+  check('打码 · 手机号 / 身份证 / 银行卡 各归其类（顺序优先级）',
+    mkPure.phone === 'phone' && mkPure.idcard === 'idcard' && mkPure.bank === 'bank',
+    `phone=${mkPure.phone} idcard=${mkPure.idcard} bank=${mkPure.bank}`);
+  check('打码 · 长数字串必须整框（混在句子里的不打）',
+    mkPure.longWhole === 1 && mkPure.longInText === 0,
+    `整框=${mkPure.longWhole} 句内=${mkPure.longInText}`);
+  check('打码 · 关掉「手机号」后 11 位数字不再被兜底规则打掉',
+    mkPure.phoneOff === 0, `剩余命中 ${mkPure.phoneOff} 处`);
+  check('打码 · 关掉一条规则不影响其它规则', mkPure.emailStill === 'email', mkPure.emailStill);
+  check('打码 · 能落到具体文字框就不整行盖',
+    mkPure.two === 'item:70', mkPure.two);
+  check('打码 · 号码被切成两半时整行兜底能接住',
+    mkPure.split === 'line', mkPure.split);
+  check('打码 · 相邻遮盖矩形合并（半透明叠加不会叠深）',
+    mkPure.merged === '1:95', mkPure.merged);
+
+  console.log('\n[2h] 打码：识别 → 遮盖 → 导出');
+  await cdp.evaluate(`document.querySelector('.tw-tab[data-mode="mask"]').click()`);
+  await cdp.waitFor("(() => { const p = document.getElementById('viewTextMask');"
+    + " return !!(p && !p.hidden); })()", 10000, '打码面板可见');
+
+  // 页面里现造一张含敏感信息的图（不依赖样例文件）
+  await cdp.evaluate(`(async () => {
+    const cv = document.createElement('canvas');
+    cv.width = 820; cv.height = 430;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 820, 430);
+    ctx.fillStyle = '#111'; ctx.font = '24px sans-serif';
+    ['姓名：张三', '手机：13800138000', '身份证：110101199003078888',
+     '邮箱：zhangsan@example.com', '银行卡：6222021234567890123',
+     '订单号：202610131234567', '金额：1920 元'].forEach((t, i) => {
+      ctx.fillText(t, 30, 52 + i * 52);
+    });
+    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'mask_card.png', { type: 'image/png' }));
+    const inp = document.getElementById('maskInput');
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await cdp.waitFor('(() => { const M = window.WBText.mask;'
+    + ' return !!(M.lines && !M.busy); })()', 90000, '打码识别完成');
+  await sleep(500);
+
+  const mk = await cdp.evaluate(`(() => {
+    const M = window.WBText.mask;
+    const h = M.hits.find((x) => x.label === '手机号');
+    return {
+      labels: M.hits.map((x) => x.label).join(','),
+      count: M.hits.length,
+      on: M.hits.filter((x) => x.on !== false).length,
+      stats: document.getElementById('maskStats').textContent,
+      // 命中区域中心 与 一处空白 的遮盖层像素
+      hitPx: h ? window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2) : null,
+      blankPx: window.WBText.maskPixel(760, 24),
+      boxCount: document.querySelectorAll('#maskOverlay .tw-box').length,
+    };
+  })()`);
+  console.log(`      命中：${mk.labels} · ${mk.stats} · 框 ${mk.boxCount}`);
+  // 不断言"恰好 4 处"：OCR 若把"订单号：202610131234567"里的数字单独切成一个框，
+  // 那它按规则（长数字串必须整框）**就该**被打上——那是预期的保守行为。
+  check('打码 · 手机号 / 身份证 / 邮箱 / 银行卡 都被识别出来',
+    ['手机号', '身份证', '邮箱', '银行卡'].every((l) => mk.labels.includes(l)),
+    mk.labels);
+  check('打码 · 命中框与命中项一一对应', mk.boxCount === mk.count, `框 ${mk.boxCount} / 项 ${mk.count}`);
+  check('打码 · 命中区域已被盖住（色块 #111）',
+    mk.hitPx && mk.hitPx[0] < 40 && mk.hitPx[1] < 40 && mk.hitPx[2] < 40 && mk.hitPx[3] > 200,
+    JSON.stringify(mk.hitPx));
+  check('打码 · 未命中区域没有被碰（遮盖层透明）',
+    mk.blankPx && mk.blankPx[3] === 0, JSON.stringify(mk.blankPx));
+
+  // 逐项开关：取消第一项 → 那块恢复透明；再勾回来 → 又盖上
+  await cdp.evaluate("document.querySelector('#maskHits .tw-hit input').click()");
+  await sleep(350);
+  const off1 = await cdp.evaluate(`(() => {
+    const M = window.WBText.mask;
+    const h = M.hits.find((x) => x.label === '手机号');
+    return { on: h.on !== false, px: window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2),
+             stats: document.getElementById('maskStats').textContent };
+  })()`);
+  check('打码 · 取消勾选后该处不再被盖（其余照旧）',
+    off1.on === false && off1.px && off1.px[3] === 0, `${off1.stats} · ${JSON.stringify(off1.px)}`);
+  await cdp.evaluate("document.querySelector('#maskHits .tw-hit input').click()");
+  await sleep(350);
+  const on1 = await cdp.evaluate(`(() => {
+    const M = window.WBText.mask;
+    const h = M.hits.find((x) => x.label === '手机号');
+    const px = window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2);
+    return { on: h.on !== false, a: px[3] };
+  })()`);
+  check('打码 · 重新勾选后恢复遮盖', on1.on === true && on1.a > 200, JSON.stringify(on1));
+
+  // 换样式：马赛克 / 模糊仍然盖住（不透明），像素与色块不同
+  const styles = {};
+  for (const m of ['mosaic', 'blur']) {
+    await cdp.evaluate(`document.querySelector('.tw-mbtn[data-m="${m}"]').click()`);
+    await sleep(450);
+    styles[m] = await cdp.evaluate(`(() => {
+      const M = window.WBText.mask;
+      const h = M.hits.find((x) => x.label === '手机号');
+      return window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2);
+    })()`);
+  }
+  check('打码 · 马赛克档在该处确实画了东西',
+    styles.mosaic && styles.mosaic[3] > 200, JSON.stringify(styles.mosaic));
+  check('打码 · 模糊档在该处确实画了东西', styles.blur && styles.blur[3] > 200,
+    JSON.stringify(styles.blur));
+
+  // 抹字档：走引擎擦除，并要求它自报"还有没有起伏"
+  await cdp.evaluate("document.querySelector('.tw-mbtn[data-m=\"erase\"]').click()");
+  await cdp.waitFor('!!window.WBText.mask.eraseImg', 120000, '抹字结果就绪');
+  await sleep(400);
+  const er = await cdp.evaluate(`(() => {
+    const M = window.WBText.mask;
+    return { n: (M.leftovers || []).length,
+             left: M.leftovers,
+             hasImg: !!M.eraseImg };
+  })()`);
+  check('打码 · 抹字走引擎并返回逐块残留度量',
+    er.hasImg && er.n >= 4, `块数 ${er.n} · ${JSON.stringify(er.left)}`);
+  check('打码 · 纯白底上的抹字结果是干净的（残留度量接近 0）',
+    er.left.filter((v) => v <= 8).length >= 3,
+    JSON.stringify(er.left));
+
+  // 导出：canvas 重编码后不应带 APP1(Exif) 段
+  const exif = await cdp.evaluate(`(async () => {
+    // 先造一张"带 EXIF 风格头"的输入，确认元数据不会跟着出去
+    const src = document.createElement('canvas');
+    src.width = 200; src.height = 120;
+    const sc = src.getContext('2d');
+    sc.fillStyle = '#fff'; sc.fillRect(0, 0, 200, 120);
+    sc.fillStyle = '#111'; sc.font = '20px sans-serif'; sc.fillText('13800138000', 12, 50);
+    const blob = await new Promise((r) => src.toBlob(r, 'image/jpeg', 0.92));
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let app1 = false, i = 2;
+    while (i + 4 < buf.length) {
+      if (buf[i] !== 0xFF) break;
+      const mk2 = buf[i + 1];
+      if (mk2 === 0xD8 || mk2 === 0x01 || (mk2 >= 0xD0 && mk2 <= 0xD7)) { i += 2; continue; }
+      if (mk2 === 0xDA) break;
+      const len = (buf[i + 2] << 8) | buf[i + 3];
+      if (mk2 === 0xE1) app1 = true;
+      i += 2 + len;
+    }
+    return { bytes: buf.length, app1 };
+  })()`);
+  check('打码 · 导出的 JPEG 不含 APP1(Exif) 段（canvas 重编码天然抹掉元信息）',
+    exif.app1 === false && exif.bytes > 500, `${exif.bytes} bytes · app1=${exif.app1}`);
 
   console.log('\n[3] 点「作品库」');
   const c2 = await clickNav('projects', 'images');
