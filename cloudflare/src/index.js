@@ -17,7 +17,7 @@ import * as providers from "./providers.js";
 // 裸路径 → 静态页面。
 //
 // 注意 "/image"：无痕改字与图像生成已经合并到同一个页面（/）里，靠 hash 切视图，
-// 所以 /image 退化成兼容入口 —— 老书签、老链接进来要还能用，直接跳到 /#create。
+// 所以 /image 退化成兼容入口 —— 老书签、老链接进来要还能用，直接跳到 /#generate。
 const PAGE_MAP = {
   "/": "/static/index.html",
   "/admin": "/static/admin.html",
@@ -26,7 +26,7 @@ const PAGE_MAP = {
 // 兼容入口：老地址 → 主页面上的默认视图锚点。
 // 值只用来兜底（用户没带 fragment 时用），真实锚点由浏览器端跳转时带上。
 const LEGACY_PAGE = {
-  "/image": "#create",
+  "/image": "#generate",
 };
 
 export default {
@@ -73,7 +73,7 @@ export default {
       // 兼容入口：/image 已并入主页面 /
       //
       // 为什么不用 302：**fragment（#projects 这类）不会发给服务端**，
-      // 302 时无从得知用户原本想去哪个工具，只能盲目跳到 #create，
+      // 302 时无从得知用户原本想去哪个工具，只能盲目跳到 #generate，
       // 老书签（/image#projects）就会丢锚点。
       //
       // 所以这里返回一个极小 HTML，让**浏览器端**做跳转 ——

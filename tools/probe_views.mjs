@@ -158,14 +158,14 @@ try {
     `hash="${s0.hash}" body=${s0.bodyMode}`);
   const loadsAfterFirst = docLoads;
 
-  console.log('\n[2] 点侧边栏「自由生成」');
+  console.log('\n[2] 点侧边栏「AI 生成」');
   const dbg = await cdp.evaluate(`(() => {
-    const a = document.querySelector('.sb-item[data-key="create"]');
+    const a = document.querySelector('.sb-item[data-key="generate"]');
     return { found: !!a, tag: a ? a.tagName : '', href: a ? a.getAttribute('href') : '',
              hash: location.hash };
   })()`);
   console.log(`      侧边栏项：found=${dbg.found} ${dbg.tag} href=${dbg.href} hash="${dbg.hash}"`);
-  const c1 = await clickNav('create', 'images');
+  const c1 = await clickNav('generate', 'images');
   const s1 = await viewState();
   check('点击导航项成功', c1.ok === true, `ok=${c1.ok}`);
   check('切到生成视图', s1.images === true && s1.edit === false,
@@ -173,6 +173,27 @@ try {
   check('生成视图内部显示生成区', s1.genVisible === true);
   check('切换没有重新加载页面', docLoads === loadsAfterFirst,
     `文档加载次数 ${docLoads}（切换前 ${loadsAfterFirst}）`);
+
+  console.log('\n[2b] 合并后的侧栏与文案');
+  const copy = await cdp.evaluate(`(() => {
+    const q = (s) => (document.querySelector(s)?.textContent || '').trim();
+    return {
+      navs: [...document.querySelectorAll('.sb-item')].map(a => a.dataset.key),
+      title: q('#toolTitle'),
+      hint: q('#dropzone .dz-inner span'),
+      refCount: q('#refCount'),
+      tips: [...document.querySelectorAll('#emptyHints li')].map(li => li.textContent.trim()),
+    };
+  })()`);
+  console.log(`      侧栏项：${copy.navs.join(' / ')}`);
+  check('侧栏只剩三项（改字 / AI 生成 / 作品库）',
+    copy.navs.join(',') === 'edit,generate,projects', copy.navs.join(','));
+  check('生成区标题是「AI 图片生成」', copy.title === 'AI 图片生成', copy.title);
+  check('上传区说明写明「不传就是纯文生图」',
+    copy.hint.includes('不传就是纯文生图'), copy.hint);
+  check('参照图不再强制（计数为 0/4）', copy.refCount === '0/4', copy.refCount);
+  check('空态提示已按合并后的语义改写',
+    copy.tips.length === 3 && copy.tips[0].includes('不传参考图'), copy.tips[0] || '');
 
   console.log('\n[3] 点「作品库」');
   const c2 = await clickNav('projects', 'images');
@@ -190,10 +211,12 @@ try {
   check('生成视图已隐藏', s3.images === false);
 
   console.log('\n[5] 深链与兼容入口');
+  // 「四个工具合并成一个」之后，老 hash 仍要能落地，并当场归一到 #generate
   await cdp.send('Page.navigate', { url: `${BASE}/#combine` });
   await sleep(2500);
   const s4 = await viewState();
-  check('深链 /#combine 直接落到生成视图', s4.images === true, `hash="${s4.hash}"`);
+  check('老深链 /#combine 直接落到生成视图', s4.images === true, `hash="${s4.hash}"`);
+  check('老 hash 已归一到 #generate', s4.hash === '#generate', `hash="${s4.hash}"`);
 
   await cdp.send('Page.navigate', { url: `${BASE}/image#projects` });
   await sleep(3000);
@@ -208,7 +231,7 @@ try {
     await cdp.send('Runtime.evaluate', { expression: `location.hash = '#edit'` });
     await sleep(400);
     const t0 = Date.now();
-    await cdp.send('Runtime.evaluate', { expression: `location.hash = '#create'` });
+    await cdp.send('Runtime.evaluate', { expression: `location.hash = '#generate'` });
     await cdp.waitFor("(() => { const i = document.getElementById('viewImages');"
       + " return i && !i.hidden && getComputedStyle(i).display !== 'none'; })()", 10000);
     times.push(Date.now() - t0);

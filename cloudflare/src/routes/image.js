@@ -10,7 +10,12 @@ import { generate, GenError, MAX_REFERENCES } from "../gen.js";
 
 const ALLOWED_REF_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/bmp"]);
 
+// 工具 id → 展示名。服务端只做记录与回显，不改写提示词
+// （提示词包装放在前端，这样「实际发送了什么」对用户是可见的）。
+// create/combine/portrait/product 是「四个工具合并成一个」之前的老 id，
+// 留着是为了让作品库里已有的记录仍能显示出当时的中文名。
 const TOOL_NAMES = {
+  generate: "AI 生成",
   create: "自由生成",
   combine: "图像融合",
   portrait: "人物写真",
@@ -98,7 +103,7 @@ function successPayload(result, provider, tool) {
     ok: true,
     ...result,
     tool,
-    tool_name: TOOL_NAMES[tool] || tool || "自由生成",
+    tool_name: TOOL_NAMES[tool] || tool || "AI 生成",
     provider: { name: provider.name, model: provider.model },
   };
 }

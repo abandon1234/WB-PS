@@ -80,6 +80,19 @@ const server = createServer(async (req, res) => {
   // 首页指向真实的改字页（自检页仍可直接访问 /engine-test.html）
   if (pathname === '/') pathname = '/index.html';
 
+  // 线上 /image 是兼容入口（回落到 / 并把锚点带过去），本地做同样的事，
+  // 否则本地自检会看到 404，跟线上的行为对不上。
+  if (pathname === '/image' || pathname === '/image/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end('<!DOCTYPE html><meta charset="utf-8"><title>正在跳转…</title><script>\n'
+      + '(function () {\n'
+      + '  var h = location.hash && location.hash !== "#" ? location.hash : "#generate";\n'
+      + '  location.replace("/" + h);\n'
+      + '})();\n'
+      + '</script><noscript><a href="/">图片工具</a></noscript>');
+    return;
+  }
+
   const hit = resolveFile(pathname);
   if (!hit) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });

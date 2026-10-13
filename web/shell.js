@@ -36,15 +36,20 @@ window.WBShell = (function () {
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </defs></svg>`;
 
-  /* 侧栏导航：一处定义，两个页面共用 */
+  /* 侧栏导航：一处定义，两个页面共用。
+     生成相关的四个工具（自由生成 / 图像融合 / 人物写真 / 商品图生成）本质是
+     同一件事 —— 提示词 + 可选参考图，差异只是提示词怎么写，所以并成一个入口。 */
   const NAV = [
     { key: 'edit', label: '无痕改字', href: '/#edit', icon: '#i-type', sec: '图片工具' },
-    { key: 'create', label: '自由生成', href: '/#create', icon: '#i-spark', sec: '图片工具' },
-    { key: 'combine', label: '图像融合', href: '/#combine', icon: '#i-layers', sec: '图片工具' },
-    { key: 'portrait', label: '人物写真', href: '/#portrait', icon: '#i-person', sec: '图片工具' },
-    { key: 'product', label: '商品图生成', href: '/#product', icon: '#i-box', sec: '图片工具' },
+    { key: 'generate', label: 'AI 生成', href: '/#generate', icon: '#i-spark', sec: '图片工具' },
     { key: 'projects', label: '作品库', href: '/#projects', icon: '#i-folder', sec: '资源', badge: true },
   ];
+
+  /* 合并前的老链接（#create/#combine/#portrait/#product）仍算「AI 生成」，
+     这样收藏夹里的旧地址、外面发过的链接点进来高亮不会丢。 */
+  const LEGACY = {
+    create: 'generate', combine: 'generate', portrait: 'generate', product: 'generate',
+  };
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -55,7 +60,8 @@ window.WBShell = (function () {
     // 无痕改字与图像生成现在同在一个页面（/），靠 hash 区分视图。
     // /image 仍保留为兼容入口（会跳到 /#<工具>），所以这里也认它。
     if (p === '/' || p === '/index.html' || p === '/image') {
-      return NAV.some((n) => n.key === h) ? h : 'edit';
+      const k = LEGACY[h] || h;
+      return NAV.some((n) => n.key === k) ? k : 'edit';
     }
     return '';
   }
@@ -192,5 +198,5 @@ window.WBShell = (function () {
     mount();
   }
 
-  return { mount, refresh, syncActive, currentKey, NAV, fmtSize };
+  return { mount, refresh, syncActive, currentKey, NAV, LEGACY, fmtSize };
 })();

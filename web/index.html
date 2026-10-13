@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图片工具 · 无痕改字 &amp; 图像生成</title>
-<link rel="stylesheet" href="/static/shell.css?v=3.5">
-<link rel="stylesheet" href="/static/style.css?v=3.5">
-<link rel="stylesheet" href="/static/image.css?v=3.5">
+<link rel="stylesheet" href="/static/shell.css?v=3.6">
+<link rel="stylesheet" href="/static/style.css?v=3.6">
+<link rel="stylesheet" href="/static/image.css?v=3.6">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%237ee04a'/><text x='50' y='72' font-size='62' text-anchor='middle' fill='%230a1503' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
@@ -347,7 +347,7 @@
 
           <div class="stage">
             <header class="stage-head">
-              <h1 id="toolTitle">自由生成</h1>
+              <h1 id="toolTitle">AI 图片生成</h1>
               <p id="toolDesc"></p>
             </header>
 
@@ -459,7 +459,7 @@
                 <button class="btn ghost" id="btnFavFilter">
                   <svg class="ic" viewBox="0 0 24 24"><use href="#i-star"/></svg><span>只看收藏</span>
                 </button>
-                <a class="btn ghost" href="/image" id="btnBackCreate">
+                <a class="btn ghost" href="/#generate" id="btnBackCreate">
                   <svg class="ic" viewBox="0 0 24 24"><use href="#i-spark"/></svg><span>去生成</span>
                 </a>
                 <button class="btn ghost danger" id="btnLbClearAll">
@@ -482,15 +482,15 @@
 </main>
 </div>
 
-<script src="/static/store.js?v=3.5"></script>
-<script src="/static/shell.js?v=3.5"></script>
-<script src="/static/workspace.js?v=3.5"></script>
-<script src="/static/app.js?v=3.5"></script>
-<script src="/static/toolcache.js?v=3.5"></script>
-<script src="/static/image.js?v=3.5"></script>
+<script src="/static/store.js?v=3.6"></script>
+<script src="/static/shell.js?v=3.6"></script>
+<script src="/static/workspace.js?v=3.6"></script>
+<script src="/static/app.js?v=3.6"></script>
+<script src="/static/toolcache.js?v=3.6"></script>
+<script src="/static/image.js?v=3.6"></script>
 <!-- 浏览器本地引擎（模型缓存在浏览器，网页直接调用本地缓存推理）。
      module 默认延迟执行，会排在上面几个普通脚本之后。 -->
-<script type="module" src="/static/engine/boot.js?v=3.5"></script>
+<script type="module" src="/static/engine/boot.js?v=3.6"></script>
 
 <!-- ======================= 生成视图的浮层（弹层 / 灯箱 / toast） ======================= -->
 <div class="pop-wrap" id="popWrap" hidden></div>

@@ -40,7 +40,7 @@
 .dz-inner p { font-size: 12.5px; color: var(--text); }
 .dz-inner span { font-size: 11px; color: var(--text-3); display: block; margin-top: 3px; }
 
-/* 该工具不需要参照图时的说明（自由生成） */
+/* 参照图说明条：传了图时告诉用户「会以图为准」；不需要参照图的工具也用它出说明 */
 .ref-note {
   display: flex; gap: 8px; align-items: flex-start;
   padding: 11px 12px; border-radius: var(--r-sm);
@@ -94,6 +94,10 @@
   font-size: 11.5px; color: var(--text-2);
   border: 1px solid var(--border-2); border-radius: 20px;
   padding: 4px 10px; transition: .14s;
+  /* 不参与 flex 压缩 + 不换行：否则窄栏里会被压成"一个字一行"的小方块
+     （短语是可换行的中文，min-content 只有一个字宽） */
+  flex: 0 0 auto; white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis;
 }
 .chip:hover { color: var(--accent); border-color: var(--accent-line); background: var(--accent-dim); }
 

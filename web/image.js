@@ -26,76 +26,52 @@ function fmtTime(ts) {
 }
 
 /* ---------------------------------------------------------------- 工具定义 */
-/* 四个工具不是换个标题而已：各自有不同的参照图要求、默认尺寸，
-   以及一段会拼进提示词的工具指令（wrap）——这样出来的画面才会真的不一样。 */
-const TOOLS = [
-  {
-    id: 'create', name: '自由生成', icon: '#i-spark',
-    title: 'AI 图片生成',
-    desc: '文生图：用一段提示词生成全新画面。也可以传 1~4 张参考图 —— 传了会参考其中的风格或主体，不传就是纯文生图。描述越具体越容易得到想要的效果：主体 + 场景 + 风格 + 光线。',
-    refs: { min: 0, max: 4 },          // 选传：不传=纯文生图，传了=带参考
-    size: '1024x1024',
-    // 没传参考图时提示词原样发送；传了就给一句轻量的参考说明，
-    // 不写成「必须保持主体一致」那种强约束 —— 自由生成不承担"保主体"的职责，
-    // 那是「图像融合」的活。想强保主体的话工具自身会提示去换工具。
-    wrap: (p, hasRefs) => (hasRefs
-      ? '参考所给图片的风格、构图或主体特征，生成下面的画面：\n' + p
-        + '\n要求：画面自然统一，不要出现拼贴或抠图痕迹。'
-      : p),
-    placeholder: '描述你想生成的画面…\n例如：生成一个小狗，坐在草地上，阳光明媚，高清摄影风格',
-    chips: ['生成一个小狗', '未来城市夜景，赛博朋克风格，霓虹灯', '极简扁平插画，女孩在窗边看书', '水墨风格的远山与孤舟'],
-    hints: ['描述越具体越准：主体 + 场景 + 风格 + 光线',
-            '提示词原样发送，不做任何改写',
-            '可传 1~4 张参考图（选传）；要严格保持主体外观一致请用「图像融合」'],
-    note: '',
-  },
-  {
-    id: 'combine', name: '图像融合', icon: '#i-layers',
-    title: '图像融合',
-    desc: '把参照图里的主体融入你描述的全新场景、背景与光线。可上传 1~4 张作为参考，主体外观会尽量保持一致。',
-    refs: { min: 1, max: 4 },
-    size: 'auto',
-    wrap: (p) => '把参照图中的主体自然地融入以下场景，保持主体的外观与特征一致：\n' + p
-      + '\n要求：光照、阴影、色温与场景保持统一，主体边缘自然，不要出现拼贴或抠图痕迹。',
-    placeholder: '描述目标场景…\n例如：把主体放到海边日落场景中，柔和逆光，写实摄影风格',
-    chips: ['把主体放到海边日落场景中', '换成纯白背景的电商主图', '融入未来城市霓虹街头', '放进原木桌面的静物场景'],
-    hints: ['先上传 1~4 张参照图（多张会更贴近你想要的样子）',
-            '提示词只写「要去哪里」，不必再描述主体长什么样',
-            '光照与阴影会自动与新场景统一'],
-    note: '',
-  },
-  {
-    id: 'portrait', name: '人物写真', icon: '#i-person',
-    title: '人物写真',
-    desc: '以参照图的人像为基准生成新的写真，尽量保留人物身份特征（五官、发型、气质）。默认输出竖版。',
-    refs: { min: 1, max: 1 },
-    size: '1024x1536',
-    wrap: (p) => '以参照图中人物的五官、发型与气质为准，生成一张新的写真照片：\n' + p
-      + '\n要求：保持人物身份一致，不要改变面部特征；肤质自然，避免过度磨皮。',
-    placeholder: '描述想要的写真风格…\n例如：日系胶片质感，浅景深，窗边自然光',
-    chips: ['日系胶片质感，浅景深', '正装职业照，纯灰背景', '户外逆光，暖色调'],
-    hints: ['上传 1 张清晰人像（正脸、无遮挡效果最好）',
-            '提示词写「风格 + 光线 + 场景」即可，不必重复描述长相',
-            '默认竖版 1024×1536，可用左下角切换'],
-    note: '',
-  },
-  {
-    id: 'product', name: '商品图生成', icon: '#i-box',
-    title: '商品图生成',
-    desc: '把参照图里的商品放进干净有质感的场景，输出可直接用于电商主图与详情页的画面。',
-    refs: { min: 1, max: 1 },
-    size: '1024x1024',
-    wrap: (p) => '把参照图中的商品放进下面的场景，生成一张电商商品图：\n' + p
-      + '\n要求：商品主体清晰完整、边缘干净、比例准确，不改变商品外观与颜色；'
-      + '背景简洁有质感，画面中不要出现文字、水印或多余道具。',
-    placeholder: '描述商品与场景…\n例如：大理石台面，柔和顶光，极简高级感',
-    chips: ['大理石台面，柔和顶光', '纯白背景无阴影', '原木与绿植的自然场景'],
-    hints: ['上传 1 张商品图（主体完整、边缘干净）',
-            '提示词写「台面材质 + 光线 + 氛围」最有效',
-            '输出会自动避免文字与水印'],
-    note: '',
-  },
-];
+/* 只有一个工具。
+   以前拆成「自由生成 / 图像融合 / 人物写真 / 商品图生成」四个，但它们的流程
+   完全一样：填提示词 →（可选）传参考图 → 生成。差别只在提示词怎么写、
+   要不要参考图，所以合并成一个入口，由「有没有传参考图」自动决定走哪种语义：
+
+     * 不传参考图 → 纯文生图，提示词原样发送（就是原来的「自由生成」）
+     * 传了参考图 → 以参照图主体为准，把它放进提示词描述的场景里
+       （同时覆盖了原来的融合 / 写真 / 商品图：主体外观、五官、颜色都不许变）
+
+   想指定风格（写真、电商主图之类）直接写进提示词，下面的 chips 里有现成例子。 */
+const TOOL = {
+  id: 'generate', name: 'AI 生成', icon: '#i-spark',
+  title: 'AI 图片生成',
+  desc: '一个入口搞定：不传参考图就是文生图，用提示词描述画面；传了 1~4 张参考图，就以参照图里的主体为准（外观、人物特征、商品形态保持一致），把它放进你描述的场景。描述越具体越容易得到想要的效果：主体 + 场景 + 风格 + 光线。',
+  refs: { min: 0, max: 4 },          // 选传：0 张=纯文生图，1~4 张=按参照图生成
+  size: '1024x1024',
+  wrap: (p, hasRefs) => (hasRefs
+    // 有参照图才加指令。写成「保持主体一致」是因为用户既然传了图，
+    // 意图就是保主体；纯文生图时提示词必须原样发送，不做任何改写。
+    ? '以参照图中的主体为准，保持其外观、五官、发型、比例与颜色等特征不变，'
+      + '按下面的描述生成画面：\n' + p
+      + '\n要求：光照、阴影、色温与场景保持统一，主体边缘自然，'
+      + '不要改变主体本身，不要出现拼贴或抠图痕迹。'
+    : p),
+  placeholder: '描述你想生成的画面…\n例如：一个小狗坐在草地上，阳光明媚，高清摄影风格\n传了参考图就只写场景：把主体放到海边日落中，柔和逆光',
+  // 每条都短：chips 栏只有一列宽，长句会被挤成竖排小方块（踩过）
+  chips: ['生成一只小狗',
+          '未来城市夜景',
+          '把主体放进海边日落',
+          '日系胶片写真',
+          '大理石台面商品图',
+          '纯白背景电商主图'],
+  hints: ['不传参考图 = 纯文生图；传 1~4 张 = 以参照图主体为准生成',
+          '描述越具体越准：主体 + 场景 + 风格 + 光线',
+          '传了参考图，主体的长相 / 外观就不用在提示词里重复写了'],
+  note: '',
+};
+
+/** 界面与草稿都按数组遍历，这里保持 TOOLS 的形状，只是长度变成 1 */
+const TOOLS = [TOOL];
+
+/** 合并前的老工具 id → 新 id。老链接（#combine 等）与旧草稿都要靠它落地。 */
+const LEGACY_IDS = {
+  create: TOOL.id, combine: TOOL.id, portrait: TOOL.id, product: TOOL.id,
+};
+const normToolId = (id) => LEGACY_IDS[id] || id;
 
 /** 「1~4 张」这样的文案 */
 function refRange(t) {
@@ -129,8 +105,8 @@ const STREAM_TIMEOUT = 300;
 
 /* ---------------------------------------------------------------- 状态 */
 const S = {
-  tool: TOOLS[0],
-  size: TOOLS[0].size,
+  tool: TOOL,
+  size: TOOL.size,
   count: 1,
   refs: [],                 // [{file, url}]
   status: null,
@@ -238,10 +214,11 @@ async function apiGenerate(url, fd, { signal, onTick } = {}) {
 }
 
 /* ================================================================ 工具草稿
-   四个工具各留一份草稿：切走时收起来，切回时原样接上；
-   同时落到本机，刷新页面或去「无痕改字」转一圈回来也不会丢。 */
+   草稿仍按 tool id 存（现在只有一个工具），切走 / 刷新 / 去「无痕改字」
+   转一圈回来都不会丢；合并前的老草稿也在这里被接过来。 */
 let draftsReady = false;
 let firstHydrate = true;      // 首屏恢复不弹提示
+let legacyRefsKey = '';       // 老草稿里的参照图挂在哪个老 id 上（迁移用）
 
 function blankDraft(t) {
   return {
@@ -351,7 +328,9 @@ async function hydrateDraft(t) {
   let ok = false;
   try {
     if (!d.refs.length && window.ToolCache) {
-      const rows = await ToolCache.getRefs(t.id);
+      // 合并前存的参照图还挂在老 id（create/combine/…）上，这里跟着老键读一次；
+      // 用户下一次增删参照图就会写到新键上，老键自然废弃
+      const rows = await ToolCache.getRefs(legacyRefsKey || t.id);
       d.refs = (rows || []).slice(0, t.refs.max).map(r => {
         const file = new File([r.buf], r.name || 'ref.png',
           { type: r.type || 'image/png' });
@@ -390,27 +369,36 @@ async function hydrateDraft(t) {
   }
 }
 
-/** 启动时把四个工具的草稿读回内存（只读轻量字段，参照图等切过去时再取） */
+/** 启动时把草稿读回内存（只读轻量字段，参照图等切过去时再取）。
+ *  合并工具前的老草稿（create/combine/portrait/product）也在这里接过来：
+ *  新键没有记录时，取其中 savedAt 最新的一条继续用。 */
 async function preloadDrafts() {
   if (!window.ToolCache) return;
   let rows = [];
   try { rows = await ToolCache.listStates(); } catch (_) { return; }
+  let mine = null, older = null;
   for (const rec of rows || []) {
-    const t = TOOLS.find(x => x.id === rec.tool);
-    if (!t) continue;
-    const d = blankDraft(t);
-    d.prompt = rec.prompt || '';
-    d.size = rec.size || t.size;
-    d.count = rec.count || 1;
-    d.current = rec.current || 0;
-    d.lastPrompt = rec.lastPrompt || '';
-    d.lastSent = rec.lastSent || '';
-    d.meta = rec.meta || null;
-    d.recIds = Array.isArray(rec.recIds) ? rec.recIds : [];
-    d.loaded = false;                       // 参照图与结果图按需补齐
-    S.byTool[t.id] = d;
-    if (d.prompt || d.recIds.length) S.restored++;
+    if (rec.tool === TOOL.id) {
+      if (!mine || (rec.savedAt || 0) > (mine.savedAt || 0)) mine = rec;
+    } else if (normToolId(rec.tool) === TOOL.id) {
+      if (!older || (rec.savedAt || 0) > (older.savedAt || 0)) older = rec;
+    }
   }
+  const rec = mine || older;
+  if (!rec) return;
+  const d = blankDraft(TOOL);
+  d.prompt = rec.prompt || '';
+  d.size = rec.size || TOOL.size;
+  d.count = rec.count || 1;
+  d.current = rec.current || 0;
+  d.lastPrompt = rec.lastPrompt || '';
+  d.lastSent = rec.lastSent || '';
+  d.meta = rec.meta || null;
+  d.recIds = Array.isArray(rec.recIds) ? rec.recIds : [];
+  d.loaded = false;                       // 参照图与结果图按需补齐
+  if (!mine && older) legacyRefsKey = older.tool;
+  S.byTool[TOOL.id] = d;
+  if (d.prompt || d.recIds.length) S.restored++;
 }
 
 /** 结果图被从作品库删掉时，各工具舞台上缓存的「上一张」也随之失效 */
@@ -439,7 +427,7 @@ window.WBImage = {
   showKey(key) {
     if (!key) return;
     if (key === 'projects') { switchView('projects'); return; }
-    if (TOOLS.some((t) => t.id === key)) { selectTool(key); return; }
+    if (TOOLS.some((t) => t.id === normToolId(key))) { selectTool(key); return; }
   },
   get ready() { return draftsReady; },
   get view() { return S.view; },
@@ -477,7 +465,7 @@ const isImagesVisible = () => {
   // 嵌入模式不接管 hash —— 外层靠它决定显示改字还是生成。
   if (!EMBEDDED()) window.addEventListener('hashchange', applyHash);
 
-  // 先把四个工具的本机草稿读回内存，再决定界面该显示哪一个
+  // 先把本机草稿（含合并前的老草稿）读回内存，再决定界面该显示哪一个
   await preloadDrafts();
   draftsReady = true;
   if (!EMBEDDED()) applyHash();
@@ -519,7 +507,7 @@ const isImagesVisible = () => {
 
 /* ================================================================ 工具切换 */
 function selectTool(id) {
-  const t = TOOLS.find(x => x.id === id);
+  const t = TOOLS.find(x => x.id === normToolId(id));
   if (!t) return;
   // 已经是这个工具时，仍要确保生成区是显示状态 —— 用户可能是从改字视图点过来的，
   // 那时 S.view 还是 'generate'（模块内部状态没变），但外层显示的是改字视图。
@@ -544,7 +532,7 @@ function selectTool(id) {
   $('toolDesc').textContent = t.desc;
   $('prompt').placeholder = t.placeholder;
 
-  // 每个工具有自己的提示词、自己的尺寸、自己的参照图与结果
+  // 铺上自己的草稿：提示词、尺寸、参照图与上一张结果都从草稿里接回来
   applyDraft(t, S.byTool[t.id] || blankDraft(t));
   renderToolChips();
   renderRefs();
@@ -613,7 +601,7 @@ function applyHash() {
   if (!draftsReady) return;      // 草稿还没读回来，别急着决定显示哪个工具
   const h = location.hash.replace(/^#/, '');
   if (h === 'projects') { switchView('projects'); return; }
-  const t = TOOLS.find(x => x.id === h);
+  const t = TOOLS.find(x => x.id === normToolId(h));
   switchView('generate', t ? t.id : null);
   selectTool(t ? t.id : S.tool.id);    // 没有 hash 时落在默认工具，也要铺上它的草稿
 }
@@ -693,39 +681,41 @@ function renderRefs() {
   renderRefZone();
 }
 
-/** 不同工具的参照图区不一样：不需要参照图的工具直接不显示上传框 */
+/** 参照图区的文案：传了图就把「以图为准」这件事说清楚 ——
+ *  这正是合并前那几个工具的差别所在，不给提示用户不知道图会被怎么用 */
 function renderRefZone() {
   const t = S.tool;
   const noRef = t.refs.max === 0;
+  const n = S.refs.length;
   show($('dropzone'), !noRef);
-  show($('refNote'), noRef);
-  if (noRef) $('refNoteText').textContent = t.note || '该工具不需要参照图。';
-  else {
-    const label = '拖入或点击上传图片';
-    // 选传（min=0）时说"选填"，别说"需要 0~4 张"—— 那读起来很别扭
-    const range = refRange(t);
-    const hint = t.refs.min === 0
-      ? `JPG、PNG、WebP · 单张不超过 8MB · 选填，最多 ${t.refs.max} 张`
-      : `JPG、PNG、WebP · 单张不超过 8MB · 需要 ${range}`;
-    const inner = $('dropzone').querySelector('.dz-inner');
-    if (inner) {
-      inner.querySelector('p').textContent = label;
-      inner.querySelector('span').textContent = hint;
-    }
+  show($('refNote'), !noRef && n > 0);
+  if (noRef) {
+    $('refNoteText').textContent = t.note || '该工具不需要参照图。';
+    return;
+  }
+  const inner = $('dropzone').querySelector('.dz-inner');
+  if (!inner) return;
+  if (n) {
+    $('refNoteText').textContent =
+      `已传 ${n} 张：生成时以参照图的主体为准（外观保持一致），只按提示词换场景与风格`;
+    inner.querySelector('p').textContent = '拖入或点击继续添加';
+    inner.querySelector('span').textContent =
+      `JPG、PNG、WebP · 单张不超过 8MB · 最多 ${t.refs.max} 张`;
+  } else {
+    inner.querySelector('p').textContent = '拖入或点击上传图片';
+    inner.querySelector('span').textContent =
+      'JPG、PNG、WebP · 单张不超过 8MB · 选填，不传就是纯文生图';
   }
 }
 
-/** 舞台空态按工具改写：缺参照图时直接把话说清楚 */
+/** 舞台空态：有没有参照图，话术不一样 */
 function renderToolState() {
   const t = S.tool;
-  const need = t.refs.min > 0;
-  const missing = need && !S.refs.length;
-  $('emptyTitle').textContent = missing ? `请先上传参照图（${refRange(t)}）`
-    : (need ? '参照图已就绪' : '准备就绪');
-  $('emptyDesc').textContent = missing
-    ? '这个工具以参照图为基础，没有参照图无法开始'
-    : (need ? '写下提示词，点「Generate」即可开始'
-            : '写下提示词，点「Generate」即可开始');
+  const n = S.refs.length;
+  $('emptyTitle').textContent = n ? '参考图已就绪' : '准备就绪';
+  $('emptyDesc').textContent = n
+    ? `将以这 ${n} 张参考图的主体为准生成，提示词里写清目标场景与风格即可`
+    : '写下提示词，点「Generate」即可开始';
   $('emptyHints').innerHTML = t.hints.map(h => `<li>${esc(h)}</li>`).join('');
 }
 
@@ -960,9 +950,8 @@ async function generate() {
     return;
   }
 
-  // 每个工具往提示词里拼自己的指令，这样同样的输入也会得到不同的结果。
-  // 第二个参数告诉 wrap "本次是否带了参考图" —— 自由生成要据此决定
-  // 是纯文生图、还是加上一句参考说明。
+  // 往提示词里拼一段工具指令：纯文生图原样发送，带了参照图才加「保持主体一致」。
+  // 第二个参数就是告诉 wrap「本次有没有参考图」。
   const hasRefs = S.refs.length > 0;
   const finalPrompt = t.wrap ? t.wrap(prompt, hasRefs) : prompt;
   S.lastPrompt = prompt;
@@ -1091,7 +1080,7 @@ function renderResult(res) {
   $('resElapsed').textContent = res.elapsed ? `耗时 ${res.elapsed}s` : '—';
   $('resRef').hidden = !res.used_reference;
   $('resPrompt').textContent = S.lastPrompt;
-  // 有加工具指令时把真正发出去的内容也亮出来，避免「四个工具看起来一样」的困惑
+  // 有加工具指令时把真正发出去的内容也亮出来，用户能看见提示词被怎么加工过
   const sent = S.lastSent || '';
   const wrapped = !!sent && sent !== S.lastPrompt;
   $('resSentWrap').hidden = !wrapped;

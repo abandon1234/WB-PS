@@ -10,14 +10,16 @@ const $  = (id) => document.getElementById(id);
 /* ---------------------------------------------------------------- 视图路由 */
 /**
  * 本页现在是"无痕改字 + 图像生成"的双视图单页：
- *   #edit（默认）→ 改字视图      其余 hash（#create/#combine/#projects…）→ 生成视图
+ *   #edit（默认）→ 改字视图      #generate/#projects → 生成视图
  *
  * 以前是 / → /image 两次独立加载，每次切回改字都要重新初始化本地引擎（实测 5.77s）。
  * 合并到一页后，引擎只初始化一次，切换只换显隐，实测接近瞬时。
  */
 
-/** 生成视图的 hash 集合（与 image.js 的 TOOLS id 对应） */
-const IMAGE_KEYS = new Set(['create', 'combine', 'portrait', 'product', 'projects']);
+/** 生成视图的 hash 集合（与 image.js 的 TOOLS id 对应）。
+ *  create / combine / portrait / product 是「四个工具合并成一个」之前的老 key，
+ *  留着让收藏夹里的旧链接仍能落到生成视图（image.js 会把它们归一到 generate）。 */
+const IMAGE_KEYS = new Set(['generate', 'create', 'combine', 'portrait', 'product', 'projects']);
 
 function currentViewKey() {
   const h = location.hash.replace(/^#/, '');
@@ -28,7 +30,7 @@ function currentViewKey() {
 /**
  * 生成视图请求切到某个工具时的回调（由 image.js 在嵌入模式下调用）。
  *
- * 为什么需要它：从「空 hash 的首页」点侧边栏「自由生成」时，
+ * 为什么需要它：从「空 hash 的首页」点侧边栏「AI 生成」时，
  * 目标地址 /#create 与当前 / 相比只有 hash 变化，而 hashchange 在
  * 「空 hash → 有 hash」这一步上并不总会派发（实测某些时序下收不到），
  * 结果点了没反应。所以让 image.js 直接喊一声，外层立刻切视图，
@@ -45,7 +47,7 @@ window.WBShowImages = function (key) {
   boxEdit.classList.remove('on');
   document.body.classList.add('mode-images');
   // 把 hash 补上（这样刷新/分享能回到同一视图），但不再回喊 image.js，避免绕圈
-  const want = '#' + (key || 'create');
+  const want = '#' + (key || 'generate');
   if (location.hash !== want) history.replaceState(null, '', want);
   if (window.WBShell) WBShell.syncActive();
 };
@@ -1422,7 +1424,7 @@ window.addEventListener('resize', () => { if (S.W) applyView(); });
   }
 
   // 视图路由放最后：上面的初始化都可能改写界面，路由决定最终显示哪一个视图。
-  // 用 ?v=#create 这类深链进来时也能直接落到生成视图。
+  // 用 ?v=#generate 这类深链进来时也能直接落到生成视图。
   applyViewRoute();
 })();
 

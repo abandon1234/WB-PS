@@ -38,9 +38,12 @@ router = APIRouter(tags=["image-gen"])
 
 ALLOWED_REF_TYPES = ("image/png", "image/jpeg", "image/webp", "image/bmp")
 
-# 前端四个工具的 id → 展示名。服务端只做记录与回显，不改写提示词
-# （提示词包装放在前端，这样「实际发送了什么」对用户是可见的）
+# 工具 id → 展示名。服务端只做记录与回显，不改写提示词
+# （提示词包装放在前端，这样「实际发送了什么」对用户是可见的）。
+# create/combine/portrait/product 是合并成一个工具之前的老 id，
+# 留着是为了让作品库里已有的记录仍能显示出当时的中文名。
 TOOL_NAMES = {
+    "generate": "AI 生成",
     "create": "自由生成",
     "combine": "图像融合",
     "portrait": "人物写真",
@@ -143,7 +146,7 @@ async def generate_image(
         "ok": True,
         **result,
         "tool": tool,
-        "tool_name": TOOL_NAMES.get(tool, tool or "自由生成"),
+        "tool_name": TOOL_NAMES.get(tool, tool or "AI 生成"),
         "provider": {
             "name": provider.get("name"),
             "model": provider.get("model"),
