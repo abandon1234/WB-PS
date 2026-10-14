@@ -2,7 +2,7 @@
 """图片生成模块的路由。
 
 页面：
-    GET  /image                     生成页（独立页面与静态资源）
+    GET  /image                     兼容入口 → 跳到 /#generate（页面已并入主页面）
     GET  /admin                     后台管理页（独立页面与静态资源）
 
 公开接口（**不含任何密钥/地址信息**）：
@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
                      Request, Response, UploadFile)
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
 from . import admin_auth
@@ -84,9 +84,35 @@ def require_admin(request: Request) -> str:
 
 # ------------------------------------------------------------------ 页面
 
+# 兼容入口：/image 已并入主页面 /（靠 hash 切视图），老书签、老链接进来要还能用。
+#
+# 为什么不用 302：**fragment（#projects 这类）不会发给服务端**，
+# 302 时无从得知用户原本想去哪个工具，只能盲目跳到 #generate，
+# 老书签（/image#projects）就会丢锚点。
+#
+# 所以这里返回一个极小 HTML，让**浏览器端**做跳转 ——
+# 此刻 location.hash 仍然在手上，锚点能完整带过去。
+# 用 replace 而非赋值：不留多余的历史记录，免得"后退"被卡住。
+#
+# 口径与线上 Worker 完全一致（见 cloudflare/src/index.js 的 LEGACY_PAGE）。
+LEGACY_PAGE = {"/image": "#generate"}
+
+LEGACY_REDIRECT_HTML = """<!DOCTYPE html><meta charset="utf-8">
+<title>正在跳转…</title>
+<script>
+(function () {
+  var h = location.hash && location.hash !== "#" ? location.hash : "#generate";
+  location.replace("/" + h);
+})();
+</script>
+<noscript><a href="/">图片工具</a></noscript>"""
+
+
 @router.get("/image", include_in_schema=False)
 def image_page():
-    return _page("image.html")
+    """老地址 /image → 主页面 (#generate)，保留 fragment。"""
+    return HTMLResponse(LEGACY_REDIRECT_HTML,
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.get("/admin", include_in_schema=False)

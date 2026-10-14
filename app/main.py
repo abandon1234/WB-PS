@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import mimetypes
 import os
 import sys
 import threading
@@ -403,6 +404,15 @@ async def text_translate_route(payload: Dict[str, Any] = Body(...)):
 
 
 # ------------------------------------------------------------------ 静态资源
+
+# .mjs / .wasm 必须按正确类型提供，否则浏览器端的本地引擎根本起不来：
+#   * ES module 加载会严格校验 MIME，text/plain 直接报
+#     "Failed to fetch dynamically imported module"
+#     （onnxruntime-web 的 ort-wasm-simd-threaded.mjs 就栽在这上面）
+#   * WebAssembly.instantiateStreaming 也要求 application/wasm
+# Python 的 mimetypes 在部分版本 / 平台上不认识这两个扩展名，显式注册一次。
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/wasm", ".wasm")
 
 if os.path.isdir(WEB_DIR):
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

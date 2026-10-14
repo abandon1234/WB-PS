@@ -117,9 +117,9 @@ const viewState = () => cdp.evaluate(`(() => {
     hash: location.hash, path: location.pathname,
     genVisible: vis(document.getElementById('viewGenerate')),
     projVisible: vis(document.getElementById('viewProjects')),
-    copyVisible: vis(document.getElementById('viewTextCopy')),
-    maskVisible: vis(document.getElementById('viewTextMask')),
-    transVisible: vis(document.getElementById('viewTextTranslate')),
+    copyVisible: vis(document.querySelector('#viewTextMain .tw-side[data-side="copy"]')),
+    maskVisible: vis(document.querySelector('#viewTextMain .tw-side[data-side="mask"]')),
+    transVisible: vis(document.querySelector('#viewTextMain .tw-side[data-side="translate"]')),
     bodyMode: document.body.className,
   };
 })()`);
@@ -273,17 +273,21 @@ try {
   // 下面的检测框对齐与缩放断言都要真实布局。
   await cdp.evaluate("(() => { const b = document.querySelector('.tw-tab[data-mode=\"copy\"]');"
     + ' if (b) b.click(); return true; })()');
-  await cdp.waitFor("(() => { const e = document.getElementById('viewTextCopy');"
+  await cdp.waitFor("(() => { const e = document.querySelector('#viewTextMain .tw-side[data-side=copy]');"
     + " return !!(e && !e.hidden && e.getBoundingClientRect().width > 100); })()",
     10000, '切回取文字模式');
   await sleep(300);
 
   await cdp.send('DOM.enable');
   const doc = await cdp.send('DOM.getDocument', { depth: -1 });
-  const found = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#copyInput' });
+  const found = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#twInput' });
   check('取文字：上传入口存在', !!found && !!found.nodeId, `nodeId=${found && found.nodeId}`);
   const sample = path.resolve('samples/test_card.png');
   check('取文字：样例图存在', fs.existsSync(sample), sample);
+  // 页面里要把样例图拼成长截图，而 /samples 并不在服务的路由里（只有 /static 与
+  // /assets）—— 直接把样例行内传进页面，探针就不再依赖"哪个静态前缀能取到样例图"。
+  const sampleDataUrl = 'data:image/png;base64,'
+    + fs.readFileSync(sample).toString('base64');
 
   const t0det = Date.now();
   await cdp.send('DOM.setFileInputFiles', { files: [sample], nodeId: found.nodeId });
@@ -303,13 +307,16 @@ try {
       text: W.text(),
       md: W.markdown(),
       domRows: document.querySelectorAll('#copyLines .tw-line').length,
-      boxes: document.querySelectorAll('#copyOverlay .tw-box').length,
+      boxes: document.querySelectorAll('#twOverlay .tw-box').length,
       stats: norm(document.getElementById('copyStats')),
-      meta: norm(document.getElementById('copyMeta')),
+      meta: norm(document.getElementById('twMeta')),
       foot: norm(document.querySelector('.tw-side-foot')),
       txtOn: !document.getElementById('copyTxtBtn').disabled,
       mdOn: !document.getElementById('copyMdBtn').disabled,
-      status: norm(document.getElementById('copyStatusText')),
+      // 状态条共用一条，setStatus 会整个重写 innerHTML（里面的 span 没有 id），
+      // 所以直接读状态条本身的文本；收起时按空串算。
+      status: document.getElementById('twStatus').hidden
+        ? '' : norm(document.getElementById('twStatus')),
     };
   })()`);
   tp.lines.forEach((l, i) => console.log(`        ${i + 1}. ${l}`));
@@ -339,20 +346,20 @@ try {
   // 得滚半天才看得全。这里在页面里现造一张同比例的长图（把样例图纵向拼 5 份），
   // 走真实的 file input 路径，验「默认适应窗口 + 可放大 + 框不跑偏」。
   const readGeo = () => cdp.evaluate(`(() => {
-    const c = document.getElementById('copyCanvas'), i = document.getElementById('copyImg');
+    const c = document.getElementById('twCanvas'), i = document.getElementById('twImg');
     const cs = getComputedStyle(c);
     const availW = c.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
     const availH = c.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
     const ir = i.getBoundingClientRect();
-    const box = document.querySelector('#copyOverlay .tw-box');
+    const box = document.querySelector('#twOverlay .tw-box');
     const br = box ? box.getBoundingClientRect() : null;
     return {
       nw: i.naturalWidth, nh: i.naturalHeight,
       w: +ir.width.toFixed(1), h: +ir.height.toFixed(1),
       availW: +availW.toFixed(1), availH: +availH.toFixed(1),
-      zval: (document.getElementById('copyZoomVal') || {}).textContent || '',
-      ctlShown: !document.getElementById('copyZoom').hidden,
-      boxes: document.querySelectorAll('#copyOverlay .tw-box').length,
+      zval: (document.getElementById('twZoomVal') || {}).textContent || '',
+      ctlShown: !document.getElementById('twZoom').hidden,
+      boxes: document.querySelectorAll('#twOverlay .tw-box').length,
       // 首行检测框相对图的位置 —— 缩放前后必须一样（百分比定位的意义所在）
       boxRel: br ? { l: +((br.left - ir.left) / ir.width).toFixed(3),
                      t: +((br.top - ir.top) / ir.height).toFixed(3) } : null,
@@ -367,20 +374,20 @@ try {
     const src = await new Promise((res, rej) => {
       const im = new Image();
       im.onload = () => res(im); im.onerror = rej;
-      im.src = '/samples/test_card.png';
+      im.src = ${JSON.stringify(sampleDataUrl)};
     });
     const h = src.height * (618 / src.width);
     for (let k = 0; k < 5; k++) ctx.drawImage(src, 0, k * (h + 30), 618, h);
     const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
     const dt = new DataTransfer();
     dt.items.add(new File([blob], 'tall_shot.png', { type: 'image/png' }));
-    const inp = document.getElementById('copyInput');
+    const inp = document.getElementById('twInput');
     inp.files = dt.files;
     inp.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`);
-  await cdp.waitFor(`(() => { const i = document.getElementById('copyImg');
-    const st = document.getElementById('copyStatus');
+  await cdp.waitFor(`(() => { const i = document.getElementById('twImg');
+    const st = document.getElementById('twStatus');
     return !!(i && i.naturalWidth === 618 && i.style.visibility !== 'hidden'
       && st && st.hidden && !(window.WBText.copy.busy)); })()`,
     90000, '长图已按适应窗口显示');
@@ -400,7 +407,7 @@ try {
   check('长截图：默认不是 100%', fitted.zval !== '100%' && fitted.zval !== '', fitted.zval);
   check('长截图：缩放控件已显示', fitted.ctlShown === true);
 
-  await cdp.evaluate("document.getElementById('copyZoomIn').click()");
+  await cdp.evaluate("document.getElementById('twZoomIn').click()");
   await sleep(250);
   const zoomed = await readGeo();
   check('长截图：点 + 能明显放大（不是从 25% 挪到 25%）',
@@ -411,14 +418,14 @@ try {
           && Math.abs(fitted.boxRel.t - zoomed.boxRel.t) < 0.01),
     `${fitted.boxRel && fitted.boxRel.l} → ${zoomed.boxRel && zoomed.boxRel.l}`);
 
-  await cdp.evaluate("document.getElementById('copyZoomVal').click()");
+  await cdp.evaluate("document.getElementById('twZoomVal').click()");
   await sleep(250);
   const full = await readGeo();
   check('长截图：点比例读数回到 100%（与原图 1:1）',
     full.w === full.nw && full.h === full.nh && full.zval === '100%',
     `${full.w}×${full.h} vs 原图 ${full.nw}×${full.nh} · ${full.zval}`);
 
-  await cdp.evaluate("document.getElementById('copyFit').click()");
+  await cdp.evaluate("document.getElementById('twFit').click()");
   await sleep(250);
   const refit = await readGeo();
   check('长截图：点「适应」收回可视区',
@@ -476,7 +483,7 @@ try {
 
   console.log('\n[2h] 打码：识别 → 遮盖 → 导出');
   await cdp.evaluate(`document.querySelector('.tw-tab[data-mode="mask"]').click()`);
-  await cdp.waitFor("(() => { const p = document.getElementById('viewTextMask');"
+  await cdp.waitFor("(() => { const p = document.querySelector('#viewTextMain .tw-side[data-side=mask]');"
     + " return !!(p && !p.hidden); })()", 10000, '打码面板可见');
 
   // 页面里现造一张含敏感信息的图（不依赖样例文件）
@@ -494,7 +501,7 @@ try {
     const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
     const dt = new DataTransfer();
     dt.items.add(new File([blob], 'mask_card.png', { type: 'image/png' }));
-    const inp = document.getElementById('maskInput');
+    const inp = document.getElementById('twInput');
     inp.files = dt.files;
     inp.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
@@ -514,7 +521,7 @@ try {
       // 命中区域中心 与 一处空白 的遮盖层像素
       hitPx: h ? window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2) : null,
       blankPx: window.WBText.maskPixel(760, 24),
-      boxCount: document.querySelectorAll('#maskOverlay .tw-box').length,
+      boxCount: document.querySelectorAll('#twOverlay .tw-box').length,
     };
   })()`);
   console.log(`      命中：${mk.labels} · ${mk.stats} · 框 ${mk.boxCount}`);
@@ -636,7 +643,7 @@ try {
     window.__dbgIn = cv.toDataURL('image/png');   // 诊断：把真实输入图带出来
     const dt = new DataTransfer();
     dt.items.add(new File([blob], 'erase_card.png', { type: 'image/png' }));
-    const inp = document.getElementById('maskInput');
+    const inp = document.getElementById('twInput');
     inp.files = dt.files;
     inp.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
@@ -708,7 +715,7 @@ try {
 
   console.log('\n[2i] 翻译：analyze → 上游翻译 → 复用 applyEdits 原位重绘');
   await cdp.evaluate(`document.querySelector('.tw-tab[data-mode="translate"]').click()`);
-  await cdp.waitFor("(() => { const p = document.getElementById('viewTextTranslate');"
+  await cdp.waitFor("(() => { const p = document.querySelector('#viewTextMain .tw-side[data-side=translate]');"
     + " return !!(p && !p.hidden); })()", 10000, '翻译面板可见');
 
   // 上游**不测真实服务**（生图 API 失效的教训在前）：把 /api/text/translate 拦下来
@@ -749,7 +756,7 @@ try {
     const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
     const dt = new DataTransfer();
     dt.items.add(new File([blob], 'translate_card.png', { type: 'image/png' }));
-    const inp = document.getElementById('trInput');
+    const inp = document.getElementById('twInput');
     inp.files = dt.files;
     inp.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
@@ -765,7 +772,7 @@ try {
       pairs: window.WBText.trPairs().length,
       firstSrc: T.pairs[0] ? T.pairs[0].src : '',
       runEnabled: !document.getElementById('trRunBtn').disabled,
-      viewHidden: document.getElementById('trView').hidden,
+      viewHidden: document.getElementById('twView').hidden,
     };
   })()`);
   console.log(`      识别 ${t0.n} 行 · 首行「${t0.firstSrc}」`);
@@ -783,7 +790,7 @@ try {
 
   const t1 = await cdp.evaluate(`(() => {
     const T = window.WBText.translate;
-    const img = document.getElementById('trImg');
+    const img = document.getElementById('twImg');
     const sentBox = document.getElementById('trSentBox');
     return {
       calls: window.__trCalls,
@@ -792,7 +799,7 @@ try {
       applied: window.WBText.trPairs().filter((p) => p.on !== false).length,
       edits: Object.keys(window.WBText.trEdits()).length,
       imgIsResult: img.src === T.outUrl,
-      toggleShown: document.getElementById('trView').hidden === false,
+      toggleShown: document.getElementById('twView').hidden === false,
       saveEnabled: !document.getElementById('trSavePng').disabled,
       toEditEnabled: !document.getElementById('trToEdit').disabled,
       sentShown: !sentBox.hidden,
@@ -815,17 +822,18 @@ try {
     t1.sentShown === true && t1.sentText.startsWith('1. '), t1.sentText);
 
   // 原图 / 译文 切换：换的是同一张 <img> 的 src，尺寸一致、比例不该被重置
-  await cdp.evaluate("document.querySelector('#trView .tw-tbtn[data-v=\"source\"]').click()");
+  await cdp.evaluate("document.querySelector('#twView .tw-tbtn[data-v=\"source\"]').click()");
   await sleep(300);
   const tSrc = await cdp.evaluate(`(() => {
-    const T = window.WBText.translate, img = document.getElementById('trImg');
-    return { isSource: img.src === T.objectUrl, k: document.querySelector('#trZoomVal').textContent };
+    const T = window.WBText.translate, img = document.getElementById('twImg');
+    // 原图是 blob:（选图时 createObjectURL），译文图是 data:（引擎返回）
+    return { isSource: img.src.startsWith('blob:'), k: document.querySelector('#twZoomVal').textContent };
   })()`);
-  await cdp.evaluate("document.querySelector('#trView .tw-tbtn[data-v=\"result\"]').click()");
+  await cdp.evaluate("document.querySelector('#twView .tw-tbtn[data-v=\"result\"]').click()");
   await sleep(300);
   const tRes = await cdp.evaluate(`(() => {
-    const T = window.WBText.translate, img = document.getElementById('trImg');
-    return { isResult: img.src === T.outUrl, k: document.querySelector('#trZoomVal').textContent };
+    const T = window.WBText.translate, img = document.getElementById('twImg');
+    return { isResult: img.src === T.outUrl, k: document.querySelector('#twZoomVal').textContent };
   })()`);
   check('翻译 · 切到「原图」看到的是原图', tSrc.isSource === true, `缩放 ${tSrc.k}`);
   check('翻译 · 切回「译文」看到的还是译文图（且缩放没被重置）',

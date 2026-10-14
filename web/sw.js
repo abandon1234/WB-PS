@@ -21,6 +21,7 @@ const CACHE_NAME = `wb-ps-assets-v${VERSION}`;
 
 // 只接管这些前缀的请求，其余（页面、API、图片生成）一概放行，
 // 免得把接口响应也缓存了 —— 那是线上事故的常见来源。
+// 前缀里的例外（.mjs / .wasm）见 isManaged。
 const MANAGED_PREFIXES = ['/assets/'];
 
 // 安装时顺手取的小文件：字典 45KB、清单几 KB，省一次往返
@@ -52,7 +53,15 @@ self.addEventListener('activate', (event) => {
 });
 
 function isManaged(url) {
-  return MANAGED_PREFIXES.some((p) => url.pathname.startsWith(p));
+  if (!MANAGED_PREFIXES.some((p) => url.pathname.startsWith(p))) return false;
+  // 运行时代码（.mjs / .wasm）**不接管**，交给 HTTP 缓存。
+  // SW 这里是 cache-first：一旦把某个响应（连同它的 Content-Type）存下来，
+  // 就永远从本地回，服务端后来改对了 MIME 也救不回来 —— 而 ES module 与
+  // instantiateStreaming 都严格看 MIME，存错一次就等于引擎起不来（踩过）。
+  // 这两个文件不大，本来也不需要 SW 这层。
+  const p = url.pathname;
+  if (p.endsWith('.mjs') || p.endsWith('.wasm')) return false;
+  return true;
 }
 
 self.addEventListener('fetch', (event) => {

@@ -50,10 +50,30 @@
 
 ## 文字工坊（#text）约定
 
-- 三个模式**共用一次检测**：`text.js` 的 `detectOnce()` 按「文件名+大小+修改时间」
-  签名缓存，同一张图切模式不重跑。别在模式里各自调 `runDetect`。
-- 缩放语义只有一份：`createZoom()` 工厂（实例注册进 `ZOOMS`）。取文字与打码的
-  面板 id 前缀不同（`copy*` / `mask*`），行为必须一致，改一处即改两处。
+- **是「一页 + 三个功能键」，不是三个页面**（2026-10-14 改）。三个模式共用**一块**
+  画布 DOM（`twCanvas/twImg/twOverlay/twMaskCv/twMarquee/twZoom/twStatus/twName/…`），
+  点按键只换右侧 `<aside class="tw-side" data-side="…">`。**别再往"一模式一套画布"
+  的方向退**：那样一定会重新长出「切模式就丢图、缩放归零」那堆问题。
+- **状态归属**：图片归 `CUR`（file/name/url/fittedOnce），三个模式只持有自己的识别
+  结果（`COPY` / `MASK` / `TR`）。每个模式另记一个 `meta`（尺寸+耗时），由 `paintMeta()`
+  按当前模式显示 —— 别各自去写 `twMeta`。
+- 三个模式**共用一次检测**：`detectOnce()` 按「文件名+大小+修改时间」签名缓存，
+  **且带在途去重**（检测跑到一半切模式，取文字与打码会同时来要同一张图的结果）。
+  别在模式里各自调 `runDetect`。
+- **识别按需补跑**：`LOADED = {copy, mask, translate}` 记「该模式算过哪个签名」，
+  `ensureLoaded(mode)` 只在没算过时跑一次。选图统一入口是 `openFile()`。
+- **共用一套 DOM 就必须有跨模式守卫**（踩过）：识别/翻译都是异步的，跑完时用户可能
+  已经切走了。写状态条用 `setStatusFor(mode, …)`；`paintMasks` / `renderMaskOverlay` /
+  `renderCopyOverlay` 开头判 `S.mode`；`wireMarquee` 的 pointerdown 只认 `mask`；
+  `switchTrView` 只在 `translate` 时换 `img.src`，离开翻译模式要 `ensureSourceImage()`
+  切回原图（否则取文字 / 打码会画在译文图上）。
+- 缩放语义只有一份：`createZoom()` 工厂（实例注册进 `ZOOMS`），**现在只有一个实例
+  `stageZoom`**，`onChange` 里按 `S.mode` 分发（只有打码要按新尺寸重绘遮盖层）。
+- **排查文字工坊 UI 的首选工具是 `tools/probe_text_onepage.mjs`**：打桩
+  `window.WBLocal.handle`，**不下载模型、几秒一轮**，覆盖 28 项（共用画布唯一性 /
+  切模式节点身份不变 / 检测只跑一次 / 遮盖层不漏到别的模式）。
+  ⚠️ 跑之前先确认本地服务活着：后台用 `&` 起的服务活不过那次 bash 调用，
+  表现为探针报 `chrome-error://chromewebdata/`，很容易误判成"沙箱拦了回环"。
 - **状态条显隐会改画布可用高度**（约 44px），所以 `setStatus` 在显隐变化时会主动
   对处于「适应窗口」的缩放实例补算一次。别只依赖 ResizeObserver + rAF ——
   后台标签页 / 无头环境里 rAF 会被节流。新增带状态条的面板要沿用 `setStatus`。
@@ -100,7 +120,10 @@
   再 `npx wrangler deploy` 才会上线。忘了同步 = 线上看不到改动（踩过一次）。
 - 同步脚本会 `rm -rf public` 后重建，所以**不要加 `--no-assets`**：那样会连 39MB 的
   `/assets/` 一起删掉且不补回。全量同步约几秒。
-- **同步脚本跑完必须看输出**，正常会有两行统计：「30 个文件，0.46 MB」「9 个文件，39.45 MB」。
+- **同步脚本跑完必须看输出**，正常会有两行统计：「31 个文件，0.55 MB」「9 个文件，39.45 MB」
+  （31 = `web/` 下 34 个非 assets 文件减去 `README.md` / `engine-test.html` / `sw.js`
+  三个，`sw.js` 单独发到 `public/sw.js`）。数字随 `web/` 增删文件而变化，
+  **关键判据是有没有这两行、以及 `public/static` 存不存在**，别死记文件数。
   它先删 `public/` 再重建，**删成功但重建失败时 `public/static` 会整个不存在**
   （safe-delete shim 偶发失败，重跑一次即好）。只看到报错堆栈 = 没同步成功，
   **此时绝不能接着 deploy**，否则会把空目录传上线。

@@ -1,19 +1,23 @@
 /* ==========================================================================
    文字工坊 · 取文字 / 打码 / 翻译
    ---------------------------------------------------------------------------
-   这三个模式共用同一次文字检测结果（web/engine/index.js 的 detect / analyze），
-   差别只在"后半段输出什么"：
+   三个功能键在**同一页**里切换：共用一块画布（图 / 缩放 / 状态条 / 叠加层），
+   点按键只换右侧面板。选一次图就能在三个功能之间来回试，不用重选、也不用
+   重新等识别 —— 这是「一个页面三个功能键」的全部意义。
+
+   三个功能的后半段各不相同：
 
      取文字 → 阅读顺序排序 + 段落合并 + 导出 txt / md   （只需 detect）
      打码   → 敏感信息规则匹配 + 区域遮盖               （只需 detect）
      翻译   → 译文写回 edit，复用现有 applyEdits()      （需要 analyze，要样式）
 
+   识别按需补跑：`ensureLoaded(mode)` 只在「这个模式还没算过这张图」时跑一次。
+   取文字与打码走同一个 detectOnce（本身带缓存 + 在途去重），互相切不重跑。
+
    为什么单独一个视图、不并进「无痕改字」：
    改字的 inspector 是重度样式编辑器（字体 / 描边 / 偏移 / 字距），把打码和取文字
    混进去会互相干扰、app.js 会迅速变烂。两者的关系是「工坊批量 → 改字精修」。
 
-   进度：三期都已接入本地引擎。三个模式共用同一次文字检测（按文件签名缓存），
-   差别是取文字 / 打码只需 detect，翻译要 analyze（拿样式才能按原样式重绘）。
    完整设计与排期见 docs/plan-text-workshop.md。
    ========================================================================== */
 (() => {
@@ -24,11 +28,15 @@ const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;');
 
-/* 模式定义：key 就是 hash 里那个键（#text-copy / #text-mask / #text-translate） */
+/* 模式定义：key 就是 hash 里那个键（#text-copy / #text-mask / #text-translate）。
+   三个模式共用左边那块画布，区别只有右侧面板（data-side）与画布上几个配件。 */
 const MODES = [
-  { id: 'copy',      key: 'text-copy',      label: '取文字', panel: 'viewTextCopy' },
-  { id: 'mask',      key: 'text-mask',      label: '打码',   panel: 'viewTextMask' },
-  { id: 'translate', key: 'text-translate', label: '翻译',   panel: 'viewTextTranslate' },
+  { id: 'copy', key: 'text-copy', label: '取文字',
+    dropIc: '#i-upload', desc: 'JPG、PNG、WebP · 识别全程在本机完成，图片不会上传' },
+  { id: 'mask', key: 'text-mask', label: '打码',
+    dropIc: '#i-shield', desc: '识别与遮盖全程在本机完成，图片不会上传' },
+  { id: 'translate', key: 'text-translate', label: '翻译',
+    dropIc: '#i-type', desc: '识别与重绘在本机完成；只有识别出来的文字会发往服务端翻译' },
 ];
 
 const DEFAULT_MODE = 'copy';
@@ -67,13 +75,67 @@ function syncTabs() {
   });
 }
 
-/** 显示某个模式的面板 */
-function paintMode(id) {
-  for (const m of MODES) {
-    const el = $(m.panel);
-    if (el) el.hidden = m.id !== id;
+/** 画布上随模式变的配件：拖拽提示、遮盖层、手动框选提示、译文切换 */
+function syncStage(id) {
+  const m = MODES.find((x) => x.id === id) || MODES[0];
+
+  // 拖拽区的图标与说明（三个模式讲的是不同的隐私承诺，别混用一套文案）
+  const ic = $('twDropIc');
+  if (ic) ic.setAttribute('href', m.dropIc);
+  const desc = $('twDropDesc');
+  if (desc) desc.textContent = m.desc;
+
+  // 只有打码要拖框选遮盖区域
+  const hint = $('twHint');
+  if (hint) hint.hidden = id !== 'mask';
+
+  // 只有打码有遮盖层。切走时清空 —— 留着会盖在别的模式的图上
+  const cv = $('twMaskCv');
+  if (cv) {
+    cv.hidden = id !== 'mask';
+    if (id !== 'mask' && cv.width) {
+      cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+    }
   }
+
+  // 「译文 / 原图」只在翻译模式、且已经出过译文图时才给
+  const vw = $('twView');
+  if (vw) vw.hidden = !(id === 'translate' && !!TR.outUrl);
+
+  const mq = $('twMarquee');
+  if (mq) mq.hidden = true;
+
+  // 非翻译模式一律显示原图：翻译模式的 img 可能正停在译文图上。
+  // 回到翻译模式则恢复用户上次看的那一面（译文 / 原图）。
+  if (id === 'translate') switchTrView(TR.view || 'source');
+  else ensureSourceImage();
+
+  // 检测框 / 命中框共用同一层，按模式重画（翻译不需要框，清空）
+  renderStageOverlay();
+}
+
+/** 切右侧面板。左边画布与图不动，所以切模式不再有"换了个页面"的感觉。 */
+function paintMode(id) {
+  const host = $('viewTextMain');
+  if (host) {
+    for (const el of host.querySelectorAll('.tw-side[data-side]')) {
+      el.hidden = el.dataset.side !== id;
+    }
+  }
+  syncStage(id);
   syncTabs();
+}
+
+/** 切到某模式时，若这张图还没在该模式里算过，就补跑一次识别。
+    （取文字与打码走同一个 detectOnce，互相切不重跑；翻译走 analyze，代价大。） */
+function ensureLoaded(mode) {
+  if (!CUR.file) return;
+  const sig = fileSig(CUR.file);
+  if (LOADED[mode] === sig) return;
+  LOADED[mode] = sig;
+  if (mode === 'copy') runCopy(CUR.file);
+  else if (mode === 'mask') runMask(CUR.file);
+  else runTrAnalyze(CUR.file);
 }
 
 /**
@@ -87,6 +149,8 @@ function setMode(id, keyForHash) {
   S.mode = m.id;
   paintMode(m.id);
   if (m.id === 'translate') checkTrStatus();     // 进翻译就先问一句"能不能用"
+  setStatus(ELS.status, '');                     // 上一个模式的状态条不该跟过来
+  ensureLoaded(m.id);
 
   if (embeddedBox()) {
     // 嵌入模式：整个视图的显隐交给外层，并且**主动喊一声**。
@@ -102,11 +166,12 @@ function setMode(id, keyForHash) {
 /* 第 1 期 · 取文字                                                          */
 /* ======================================================================== */
 
-/** 取文字的全部状态。result 是 engine/extract.js 的返回值（行 / 段落 / 文本）。 */
+/** 取文字的全部状态。result 是 engine/extract.js 的返回值（行 / 段落 / 文本）。
+    文件本身归 CUR（三个模式共用），这里只放取文字自己的识别结果。 */
 const COPY = {
-  file: null, name: '', objectUrl: '',
   imgW: 0, imgH: 0,
   result: null,
+  meta: '',             // 文件名旁那行（尺寸 + 识别耗时）
   busy: false,
 };
 
@@ -192,46 +257,70 @@ async function runDetect(file, onStatus) {
 /* 取文字与打码共用同一次检测：同一张图在两个模式之间切换不该重跑一遍
    （识别要 1~5 秒，切一次等一次很烦，而且结果是完全一样的）。
    签名用「文件名 + 大小 + 修改时间」—— 比按文件内容做哈希便宜，且换图必然变。 */
-const DETECT_CACHE = { sig: '', res: null };
+const DETECT_CACHE = { sig: '', res: null, inflight: null };
 const fileSig = (f) => `${f.name}|${f.size}|${f.lastModified}`;
 
 async function detectOnce(file, onStatus) {
   const sig = fileSig(file);
   if (DETECT_CACHE.sig === sig && DETECT_CACHE.res) return DETECT_CACHE.res;
-  const res = await runDetect(file, onStatus);
-  DETECT_CACHE.sig = sig;
-  DETECT_CACHE.res = res;
-  return res;
+  // 同一次检测正在路上就别再发一份：共用画布之后，用户在检测跑到一半时
+  // 切到另一个模式，两个模式都会来要同一张图的结果。
+  if (DETECT_CACHE.inflight && DETECT_CACHE.inflight.sig === sig) {
+    return DETECT_CACHE.inflight.p;
+  }
+  const p = runDetect(file, onStatus).then((res) => {
+    DETECT_CACHE.sig = sig;
+    DETECT_CACHE.res = res;
+    return res;
+  }).finally(() => {
+    if (DETECT_CACHE.inflight && DETECT_CACHE.inflight.p === p) DETECT_CACHE.inflight = null;
+  });
+  DETECT_CACHE.inflight = { sig, p };
+  return p;
 }
 
 /* ---------------------------------------------------------------- 图片展示 */
 
-/** 两个模式的元素 id 一组一份 —— 除 id 外行为完全相同，不重复写两遍 */
-const COPY_ELS = {
-  canvas: 'copyCanvas', img: 'copyImg', drop: 'copyDrop',
-  imgBox: 'copyImgBox', zoom: 'copyZoom', status: 'copyStatus',
-  input: 'copyInput', pick: 'copyPick', pickText: 'copyPickText',
-  name: 'copyName', meta: 'copyMeta',
-};
-const MASK_ELS = {
-  canvas: 'maskCanvas', img: 'maskImg', drop: 'maskDrop',
-  imgBox: 'maskImgBox', zoom: 'maskZoom', status: 'maskStatus',
-  input: 'maskInput', pick: 'maskPick', pickText: 'maskPickText',
-  name: 'maskName', meta: 'maskMeta',
+/* 三个模式**共用同一套画布元素**。
+   原来一套 id 一份、一共三份，切模式等于把整块画布换掉（图没了、缩放归零、
+   状态条重来），看着就像换了个页面。合并成一份之后，切模式只换右栏。 */
+const ELS = {
+  canvas: 'twCanvas', img: 'twImg', drop: 'twDrop',
+  imgBox: 'twImgBox', zoom: 'twZoom', status: 'twStatus',
+  input: 'twInput', pick: 'twPick', pickText: 'twPickText',
+  name: 'twName', meta: 'twMeta',
 };
 
-function showImage(file, els, zoom, holder) {
-  const img = $(els.img);
-  if (holder.objectUrl) URL.revokeObjectURL(holder.objectUrl);
-  holder.objectUrl = URL.createObjectURL(file);
-  zoom.reset();
+/* ---------------------------------------------------------------- 当前这张图 */
+
+/* 三个模式共享的「当前这张图」。
+   切模式不该把图丢掉 —— 选一次图就能在取文字 / 打码 / 翻译之间来回试，
+   这是「一个页面三个功能键」的前提。各模式自己的识别结果仍各自持有。 */
+const CUR = {
+  file: null,
+  name: '',
+  url: '',            // 原图的 object URL（翻译的译文图另存 TR.outUrl）
+  imgW: 0, imgH: 0,
+  fittedOnce: false,  // 只在"换了新图"时适应窗口；翻译换译文图不该冲掉比例
+};
+
+/* 每个模式「已经算过哪个文件」的签名。切模式时按它判断要不要补跑识别 ——
+   取文字与打码走同一个 detectOnce（本身有缓存，互相切不重跑），
+   翻译单独走 analyze，代价大，更不能白跑。 */
+const LOADED = { copy: '', mask: '', translate: '' };
+
+function showImage(file) {
+  const img = $(ELS.img);
+  if (CUR.url) URL.revokeObjectURL(CUR.url);
+  CUR.url = URL.createObjectURL(file);
+  stageZoom.reset();
   // 先藏起来：新版图解码完就按原尺寸渲染，等 load 里「适应窗口」算好了再亮，
   // 否则会闪一下两千多 px 高的大图。
   img.style.visibility = 'hidden';
-  img.src = holder.objectUrl;
-  $(els.drop).hidden = true;
-  $(els.imgBox).hidden = false;
-  const z = $(els.zoom);
+  img.src = CUR.url;
+  $(ELS.drop).hidden = true;
+  $(ELS.imgBox).hidden = false;
+  const z = $(ELS.zoom);
   if (z) z.hidden = false;
 }
 
@@ -352,21 +441,40 @@ function createZoom({ canvas, img, fit, zin, zout, val, onChange }) {
   return api;
 }
 
-/** 已建好的缩放控制器。目前只有取文字与打码两个。 */
+/** 已建好的缩放控制器。三个模式共用同一个，所以这里只会有一个。 */
 const ZOOMS = [];
 
-const copyZoom = createZoom({
-  canvas: 'copyCanvas', img: 'copyImg', fit: 'copyFit',
-  zin: 'copyZoomIn', zout: 'copyZoomOut', val: 'copyZoomVal',
+/* 三模式共用同一个缩放控制器（原来是三个实例、各缩各的，一切模式比例就重来）。
+   onChange 按当前模式分发：只有打码要把遮盖层按新显示尺寸重绘一遍。 */
+const stageZoom = createZoom({
+  canvas: 'twCanvas', img: 'twImg', fit: 'twFit',
+  zin: 'twZoomIn', zout: 'twZoomOut', val: 'twZoomVal',
+  onChange: () => { if (S.mode === 'mask') paintMasks(); },
 });
 
 /* ---------------------------------------------------------------- 检测框 */
 
+/* 三个模式共用同一层 overlay，但内容不同（取文字是识别框、打码是命中框、
+   翻译不画框）。切模式时必须整层重画，否则会留着上一个模式的框。 */
+function renderStageOverlay() {
+  if (S.mode === 'copy') renderCopyOverlay();
+  else if (S.mode === 'mask') { renderMaskOverlay(); paintMasks(); }
+  else { const host = $('twOverlay'); if (host) host.innerHTML = ''; }
+}
+
+/* 翻译模式的 img 会在原图 / 译文图之间切；只要离开翻译模式就必须切回原图，
+   否则取文字与打码会画在译文图上、坐标看着对但底下不是原图。 */
+function ensureSourceImage() {
+  const img = $('twImg');
+  if (!img || !CUR.url || !img.src) return;
+  if (img.src !== CUR.url) img.src = CUR.url;
+}
+
 /** 框的位置全用百分比 —— 图片宽度自适应，缩放/窄屏都不用重算 */
-function renderOverlay() {
-  const host = $('copyOverlay');
+function renderCopyOverlay() {
+  const host = $('twOverlay');
+  if (!host || S.mode !== 'copy') return;
   const r = COPY.result;
-  if (!host) return;
   if (!r || !r.lines.length || !COPY.imgW || !COPY.imgH) { host.innerHTML = ''; return; }
   host.innerHTML = r.lines.map((ln, i) => {
     const b = ln.rect;
@@ -384,7 +492,7 @@ function renderOverlay() {
 
 /** 鼠标停在一行（左框或右行）→ 两边同时高亮 */
 function hoverLine(i, on) {
-  const box = $('copyOverlay') && $('copyOverlay').querySelector(`.tw-box[data-i="${i}"]`);
+  const box = $('twOverlay') && $('twOverlay').querySelector(`.tw-box[data-i="${i}"]`);
   const row = $('copyLines') && $('copyLines').querySelector(`.tw-line[data-i="${i}"]`);
   if (box) box.classList.toggle('on', on);
   if (row) row.classList.toggle('on', on);
@@ -411,7 +519,7 @@ function renderLines() {
   const r = COPY.result;
 
   if (!r || !r.lines.length) {
-    host.innerHTML = `<p class="tw-side-empty">${COPY.file
+    host.innerHTML = `<p class="tw-side-empty">${CUR.file
       ? '没有识别到文字。换一张更清晰的图试试（文字太小、太糊都会识别不到）'
       : '识别结果会按阅读顺序出现在这里'}</p>`;
     return;
@@ -551,24 +659,21 @@ const baseName = (name) =>
 /* ------------------------------------------------------------------ 通用交互 */
 
 /**
- * 取文字 / 打码 / 翻译共用的「选图 / 拖拽 / 适应窗口」这一层。
- * onFile 是各自的主流程（取文字只识别、打码再加规则匹配、翻译走 analyze）。
- *
- * opts.onLoad 用来换掉"图解码完就适应窗口"这个默认行为 —— 翻译模式要在
- * 原图与译文图之间换 src，每次换都重新适应会把用户手动定的比例冲掉。
+ * 三个模式共用的「选图 / 拖拽 / 适应窗口」这一层 —— 只挂一次。
+ * 原来三个模式各挂一份（因为各有一套画布），现在画布只有一块，选图也就只有一个入口。
  */
-function wireCommon(els, zoom, onFile, opts = {}) {
-  const input = $(els.input);
-  const canvas = $(els.canvas);
+function wireStage() {
+  const input = $(ELS.input);
+  const canvas = $(ELS.canvas);
   if (!input || !canvas) return;
 
   input.addEventListener('change', (e) => {
     const f = e.target.files && e.target.files[0];
-    if (f) onFile(f);
+    if (f) openFile(f);
     e.target.value = '';          // 允许再次选同一张
   });
 
-  const pick = $(els.pick);
+  const pick = $(ELS.pick);
   if (pick) pick.addEventListener('click', () => input.click());
 
   // 拖拽：整块画布都是投放区，不用瞄准那个小框
@@ -582,77 +687,133 @@ function wireCommon(els, zoom, onFile, opts = {}) {
   }));
   canvas.addEventListener('drop', (e) => {
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) onFile(f);
+    if (f) openFile(f);
   });
 
-  // 图解码完 → 先按「适应窗口」缩好再亮出来（配合 showImage 里的 visibility）
-  const img = $(els.img);
+  // 图解码完 → 先按「适应窗口」缩好再亮出来（配合 showImage 里的 visibility）。
+  // 翻译模式会在原图 / 译文图之间换 src，两张图尺寸完全相同 —— 那种"换 src"
+  // 不该把用户手动定好的比例冲掉，所以只在换了新图时才适应。
+  const img = $(ELS.img);
   img.addEventListener('load', () => {
-    if (opts.onLoad) opts.onLoad(img); else zoom.setFit();
+    if (!CUR.fittedOnce) { stageZoom.setFit(); CUR.fittedOnce = true; }
     img.style.visibility = '';
+    // 换 src（原图 ↔ 译文图）后叠加层要跟着这张图重画。src 没变时这里是空转。
+    renderStageOverlay();
   });
   // 解码失败也要把图亮回来（否则画布一直空着，看起来像卡住）
   img.addEventListener('error', () => {
     img.style.visibility = '';
-    setStatus(els.status, '这张图读不出来，换一张试试', 'err');
+    setStatus(ELS.status, '这张图读不出来，换一张试试', 'err');
   });
 
-  zoom.wire();
+  stageZoom.wire();
+}
+
+/** 文件名旁边那行元信息跟着当前模式走（三个模式各记各的识别耗时） */
+function paintMeta() {
+  const el = $('twMeta');
+  if (!el) return;
+  el.textContent = (S.mode === 'copy' ? COPY.meta
+    : S.mode === 'mask' ? MASK.meta : TR.meta) || '';
+}
+
+/** 只在"当前模式"处于前台时才写状态条。
+    共用一条状态条之后，后台跑完的任务（识别是异步的，中途可能已经切走）
+    不该把前台正在做的事的提示盖掉。 */
+function setStatusFor(mode, msg, kind) {
+  if (S.mode === mode) setStatus(ELS.status, msg, kind);
+}
+
+/**
+ * 选图 / 拖图的唯一入口。
+ *
+ * 一张图进来后三个模式**共用**它：切模式只换右栏，图、缩放、文件名全都不动 ——
+ * 所以点「取文字 / 打码 / 翻译」不再像换了个页面，也不用重新选图。
+ * 识别按需补跑（见 ensureLoaded），当前模式立刻跑。
+ */
+function openFile(file) {
+  if (!file) return;
+  if (!/^image\//.test(file.type || '')) {
+    setStatus(ELS.status, '请选择图片文件（JPG / PNG / WebP）', 'err');
+    return;
+  }
+
+  CUR.file = file;
+  CUR.name = file.name || 'image';
+  CUR.imgW = 0; CUR.imgH = 0;
+  CUR.fittedOnce = false;
+  LOADED.copy = ''; LOADED.mask = ''; LOADED.translate = '';   // 三个模式都重来
+
+  resetCopy(); resetMask(); resetTr();
+
+  $(ELS.name).textContent = CUR.name;
+  setStatus(ELS.status, '');
+  showImage(file);
+  const vw = $('twView');                 // 换了图，翻译回到原图
+  if (vw) vw.hidden = true;
+  paintMeta();
+
+  ensureLoaded(S.mode);
 }
 
 /* ==================================================================== */
 /* 第 1 期 · 取文字 主流程                                                */
 /* ==================================================================== */
 
-async function handleFile(file) {
-  if (!file) return;
-  if (!/^image\//.test(file.type || '')) { setStatus(COPY_ELS.status, '请选择图片文件（JPG / PNG / WebP）', 'err'); return; }
-  if (COPY.busy) return;
-
-  COPY.busy = true;
-  COPY.file = file;
-  COPY.name = file.name || 'image';
+/** 换图时把取文字的结果清干净 —— 图换了，旧的行与框都不能留 */
+function resetCopy() {
   COPY.result = null;
-  $(COPY_ELS.name).textContent = COPY.name;
-  $(COPY_ELS.meta).textContent = '';
-  $(COPY_ELS.pickText).textContent = '换一张';
-  showImage(file, COPY_ELS, copyZoom, COPY);
-  renderOverlay();
+  COPY.imgW = 0; COPY.imgH = 0;
+  COPY.meta = '';
   renderLines();
   updateStats(null);
   setButtons(false);
-  setStatus(COPY_ELS.status, '正在识别…', 'busy');
+}
+
+async function runCopy(file) {
+  if (!file || COPY.busy || !CUR.file) return;
+
+  COPY.busy = true;
+  COPY.result = null;
+  COPY.meta = '';
+  renderLines();
+  updateStats(null);
+  setButtons(false);
+  setStatus(ELS.status, '正在识别…', 'busy');
 
   try {
-    const res = await detectOnce(file, (m) => setStatus(COPY_ELS.status, m, 'busy'));
+    const res = await detectOnce(file, (m) => setStatusFor('copy', m, 'busy'));
     const m = await loadExtract();
     const out = m.extract(res.items);
 
     COPY.imgW = res.width || 0;
     COPY.imgH = res.height || 0;
     COPY.result = out;
-
-    $(COPY_ELS.meta).textContent = `${res.width}×${res.height}`
+    COPY.meta = `${res.width}×${res.height}`
       + (res.elapsed_ms != null ? ` · 识别 ${res.elapsed_ms}ms` : '');
-    renderOverlay();
+    // 识别跑完时用户可能已经切到别的模式了：那就不碰共用画布与状态条，
+    // 只把结果收下（切回来时 syncStage 会按结果重画整层）。
+    if (S.mode === 'copy') {
+      paintMeta();
+      renderCopyOverlay();
+      setStatus(ELS.status,
+        out.lines.length ? '' : '没有识别到文字', out.lines.length ? '' : 'err');
+    }
     renderLines();
     updateStats(res);
     setButtons(out.lines.length > 0);
-    setStatus(COPY_ELS.status,
-      out.lines.length ? '' : '没有识别到文字', out.lines.length ? '' : 'err');
   } catch (err) {
     const msg = String((err && err.message) || err);
     const waiting = window.WBLocal && !window.WBLocal.ready && !window.WBLocal.error;
-    setStatus(COPY_ELS.status, waiting ? `本地引擎准备中… ${msg}` : `识别失败：${msg}`, 'err');
+    setStatusFor('copy', waiting ? `本地引擎准备中… ${msg}` : `识别失败：${msg}`, 'err');
     setButtons(false);
   } finally {
     COPY.busy = false;
   }
 }
 
+/** 取文字面板上的按钮（选图 / 拖拽那一层已由 wireStage 统一接管） */
 function wireCopyMode() {
-  wireCommon(COPY_ELS, copyZoom, handleFile);
-
   const all = $('copyAllBtn');
   if (all) all.addEventListener('click', async () => {
     if (!COPY.result) return;
@@ -663,13 +824,13 @@ function wireCopyMode() {
   const txt = $('copyTxtBtn');
   if (txt) txt.addEventListener('click', () => {
     if (!COPY.result) return;
-    download(`${baseName(COPY.name)}.txt`, COPY.result.text, 'text/plain');
+    download(`${baseName(CUR.name)}.txt`, COPY.result.text, 'text/plain');
   });
 
   const md = $('copyMdBtn');
   if (md) md.addEventListener('click', () => {
     if (!COPY.result) return;
-    download(`${baseName(COPY.name)}.md`, COPY.result.markdown, 'text/markdown');
+    download(`${baseName(CUR.name)}.md`, COPY.result.markdown, 'text/markdown');
   });
 }
 
@@ -682,8 +843,8 @@ function wireCopyMode() {
    ==================================================================== */
 
 const MASK = {
-  file: null, name: '', objectUrl: '',
   imgW: 0, imgH: 0,
+  meta: '',             // 文件名旁那行（尺寸 + 识别耗时）
   lines: null,          // extract 的行（与取文字同一份检测结果算出）
   hits: [],             // 待遮盖清单：自动命中 + 手动框选
   rules: null,          // 规则开关 { ruleId: bool }
@@ -714,13 +875,6 @@ async function loadMask() {
   window.WBMaskMod = maskMod;             // 自检与调试用
   return maskMod;
 }
-
-const maskZoom = createZoom({
-  canvas: 'maskCanvas', img: 'maskImg', fit: 'maskFit',
-  zin: 'maskZoomIn', zout: 'maskZoomOut', val: 'maskZoomVal',
-  // 缩放变了要按新尺寸重绘遮盖层（canvas 尺寸跟着显示尺寸走）
-  onChange: () => paintMasks(),
-});
 
 /* ------------------------------------------------------------ 遮盖绘制 */
 
@@ -781,7 +935,7 @@ function drawMasks(ctx, img, rects, scale, method) {
 
 /** 同步 canvas 尺寸到图片的显示尺寸（按 dpr 提清晰度，马赛克尤其需要） */
 function syncMaskCanvas() {
-  const cv = $('maskCv'), img = $('maskImg');
+  const cv = $('twMaskCv'), img = $('twImg');
   if (!cv || !img || !img.naturalWidth) return null;
   const w = img.clientWidth, h = img.clientHeight;
   if (!(w > 0) || !(h > 0)) return null;
@@ -792,12 +946,15 @@ function syncMaskCanvas() {
 }
 
 function paintMasks() {
+  // 遮盖层只在打码模式有意义：识别在后台跑完时用户可能已经切走了，
+  // 这时画上去会盖在别的模式的图上。
+  if (S.mode !== 'mask') return;
   const c = syncMaskCanvas();
   if (!c) return;
   const { ctx, w, h, dpr } = c;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  const img = $('maskImg');
+  const img = $('twImg');
   if (!img.naturalWidth || !MASK.hits.length || !maskMod) return;
   const rects = maskMod.toRects(MASK.hits, { pad: 2 });
   if (!rects.length) return;
@@ -806,8 +963,9 @@ function paintMasks() {
 
 /** 命中框：开启的实线红、关掉的虚线灰（关掉也要看得见，否则不知道漏了什么） */
 function renderMaskOverlay() {
-  const host = $('maskOverlay');
-  const img = $('maskImg');
+  if (S.mode !== 'mask') return;
+  const host = $('twOverlay');
+  const img = $('twImg');
   if (!host) return;
   if (!MASK.imgW || !MASK.imgH || !MASK.hits.length) { host.innerHTML = ''; return; }
   const p = (v, t) => ((v / t) * 100).toFixed(3);
@@ -856,7 +1014,7 @@ function renderHits() {
   const host = $('maskHits');
   if (!host) return;
   if (!MASK.hits.length) {
-    host.innerHTML = `<p class="tw-side-empty">${MASK.file
+    host.innerHTML = `<p class="tw-side-empty">${CUR.file
       ? '没有识别到需要遮盖的内容。可以在图上拖拽手动框选。'
       : '识别结果会出现在这里，逐条可开关'}</p>`;
     return;
@@ -906,7 +1064,7 @@ function renderHits() {
 }
 
 function hoverHitBox(id, on) {
-  const box = $('maskOverlay') && $('maskOverlay').querySelector(`.tw-box[data-id="${id}"]`);
+  const box = $('twOverlay') && $('twOverlay').querySelector(`.tw-box[data-id="${id}"]`);
   if (box) box.classList.toggle('hov', on);
 }
 
@@ -917,7 +1075,7 @@ function updateMaskStats() {
   if (el) {
     let t = total
       ? `遮盖 ${n} / ${total} 处`
-      : (MASK.file ? '未识别到敏感信息' : '待遮盖');
+      : (CUR.file ? '未识别到敏感信息' : '待遮盖');
     // 抹字档：把"到底擦干净没有"直接写在数字旁边，别让人只看预览去猜。
     // 只在结果确实对应当前命中集时才报（签名一致），阈值与 ensureErase 同步。
     if (MASK.method === 'erase' && MASK.eraseImg && total && MASK.eraseSig === hitSig()) {
@@ -975,19 +1133,19 @@ const hitSig = () => MASK.hits.filter((h) => h.on !== false)
  * 所以结果按「当前开启的命中矩形」签名缓存 —— 只开关某一项时不用重算整张。
  */
 async function ensureErase() {
-  if (MASK.erasing || !MASK.file || !maskMod) return;
+  if (MASK.erasing || !CUR.file || !maskMod) return;
   const rects = maskMod.toRects(MASK.hits, { pad: 2 });
   if (!rects.length) return;
   const sig = hitSig();
   if (MASK.eraseSig === sig && MASK.eraseImg) return;
 
   MASK.erasing = true;
-  setStatus(MASK_ELS.status, '正在擦除文字…', 'busy');
+  setStatus(ELS.status, '正在擦除文字…', 'busy');
   try {
     const L = await localFacade();
     if (!L) throw new Error('本地引擎未就绪，请刷新页面重试');
     const fd = new FormData();
-    fd.append('file', MASK.file, MASK.name);
+    fd.append('file', CUR.file, CUR.name);
     fd.append('rects', JSON.stringify(rects));
     fd.append('method', 'auto');
     const res = await L.handle('/api/text/erase', fd);
@@ -1013,13 +1171,13 @@ async function ensureErase() {
     const bad = badSolid + badTexture;
     MASK.worst = peaks.reduce(
       (m, v) => (typeof v === 'number' && v > m ? v : m), 0);
-    setStatus(MASK_ELS.status,
+    setStatus(ELS.status,
       bad ? `有 ${bad} 处没擦净，这类内容建议改用色块` : '',
       bad ? 'err' : '');
     updateMaskStats();
     paintMasks();
   } catch (err) {
-    setStatus(MASK_ELS.status, `擦除失败：${String((err && err.message) || err)}`, 'err');
+    setStatus(ELS.status, `擦除失败：${String((err && err.message) || err)}`, 'err');
   } finally {
     MASK.erasing = false;
   }
@@ -1036,16 +1194,8 @@ function loadImgEl(src) {
 
 /* ------------------------------------------------------------ 主流程 */
 
-async function handleMaskFile(file) {
-  if (!file) return;
-  if (!/^image\//.test(file.type || '')) { setStatus(MASK_ELS.status, '请选择图片文件（JPG / PNG / WebP）', 'err'); return; }
-  if (MASK.busy) return;
-
-  MASK.busy = true;
-  MASK.file = file;
-  MASK.name = file.name || 'image';
-  MASK.hits = [];
-  MASK.lines = null;
+/** 抹字结果与它那堆诊断量一起清掉（命中变了、图换了都必须重算） */
+function clearErase() {
   MASK.eraseImg = null;
   MASK.eraseSig = '';
   MASK.probeCv = null;
@@ -1053,33 +1203,51 @@ async function handleMaskFile(file) {
   MASK.peaks = [];
   MASK.worst = 0;
   MASK.levels = []; MASK.inks = []; MASK.masks = []; MASK.resids = []; MASK.methods = [];
-  $(MASK_ELS.name).textContent = MASK.name;
-  $(MASK_ELS.meta).textContent = '';
-  $(MASK_ELS.pickText).textContent = '换一张';
-  showImage(file, MASK_ELS, maskZoom, MASK);
+}
+
+/** 换图时清空打码状态 —— 图换了，命中项与抹字结果都作废 */
+function resetMask() {
+  MASK.imgW = 0; MASK.imgH = 0;
+  MASK.meta = '';
+  MASK.lines = null;
+  MASK.hits = [];
+  clearErase();
   renderHits();
-  renderMaskOverlay();
-  paintMasks();
   updateMaskStats();
-  setStatus(MASK_ELS.status, '正在识别…', 'busy');
+}
+
+async function runMask(file) {
+  if (!file || MASK.busy || !CUR.file) return;
+
+  MASK.busy = true;
+  MASK.imgW = 0; MASK.imgH = 0;
+  MASK.meta = '';
+  MASK.lines = null;
+  MASK.hits = [];
+  clearErase();
+  renderHits();
+  updateMaskStats();
+  setStatus(ELS.status, '正在识别…', 'busy');
 
   try {
-    const res = await detectOnce(file, (m) => setStatus(MASK_ELS.status, m, 'busy'));
+    const res = await detectOnce(file, (m) => setStatusFor('mask', m, 'busy'));
     const m = await loadExtract();
     MASK.imgW = res.width || 0;
     MASK.imgH = res.height || 0;
     MASK.lines = m.buildLines(res.items);
-
-    $(MASK_ELS.meta).textContent = `${res.width}×${res.height}`
+    MASK.meta = `${res.width}×${res.height}`
       + (res.elapsed_ms != null ? ` · 识别 ${res.elapsed_ms}ms` : '');
 
     renderRules();
-    rematch();
-    setStatus(MASK_ELS.status, '');
+    rematch();                       // 重算命中并重画（内部对非前台模式会跳过绘制）
+    if (S.mode === 'mask') {
+      paintMeta();
+      setStatus(ELS.status, '');
+    }
   } catch (err) {
     const msg = String((err && err.message) || err);
     const waiting = window.WBLocal && !window.WBLocal.ready && !window.WBLocal.error;
-    setStatus(MASK_ELS.status, waiting ? `本地引擎准备中… ${msg}` : `识别失败：${msg}`, 'err');
+    setStatusFor('mask', waiting ? `本地引擎准备中… ${msg}` : `识别失败：${msg}`, 'err');
   } finally {
     MASK.busy = false;
   }
@@ -1088,9 +1256,9 @@ async function handleMaskFile(file) {
 /* ------------------------------------------------------------ 手动框选 */
 
 function wireMarquee() {
-  const box = $('maskImgBox');
-  const img = $('maskImg');
-  const mq = $('maskMarquee');
+  const box = $('twImgBox');
+  const img = $('twImg');
+  const mq = $('twMarquee');
   if (!box || !img || !mq) return;
   let sx = 0, sy = 0, drawing = false;
 
@@ -1100,6 +1268,8 @@ function wireMarquee() {
   });
 
   box.addEventListener('pointerdown', (e) => {
+    // 画布是三个模式共用的，只有打码模式才认这个拖拽框选
+    if (S.mode !== 'mask') return;
     if (!MASK.imgW || e.button !== 0) return;
     const r = box.getBoundingClientRect();
     const p = toImg(e, r);
@@ -1150,7 +1320,7 @@ function wireMarquee() {
 /* ------------------------------------------------------------ 导出 */
 
 async function exportMask(fmt) {
-  const img = $('maskImg');
+  const img = $('twImg');
   if (!img.naturalWidth || !MASK.imgW || !maskMod) return;
   const rects = maskMod.toRects(MASK.hits, { pad: 2 });
   if (!rects.length) return;
@@ -1171,9 +1341,9 @@ async function exportMask(fmt) {
 
   const mime = fmt === 'jpg' ? 'image/jpeg' : 'image/png';
   const blob = await new Promise((res) => cv.toBlob(res, mime, 0.92));
-  if (!blob) { setStatus(MASK_ELS.status, '导出失败：浏览器不支持该格式', 'err'); return; }
+  if (!blob) { setStatus(ELS.status, '导出失败：浏览器不支持该格式', 'err'); return; }
   // canvas 重新编码 → 天然不带 EXIF（GPS / 机型等原始元信息不会跟着出去）
-  saveBlob(blob, `${baseName(MASK.name)}-已遮盖.${fmt}`);
+  saveBlob(blob, `${baseName(CUR.name)}-已遮盖.${fmt}`);
 }
 
 /* ------------------------------------------------------------ 装配 */
@@ -1188,9 +1358,8 @@ function setMaskMethod(m) {
   if (m === 'erase') ensureErase();     // 先按现状画（可能还没有结果），再异步补
 }
 
+/** 打码面板上的控件（选图 / 拖拽那一层已由 wireStage 统一接管） */
 function wireMaskMode() {
-  wireCommon(MASK_ELS, maskZoom, handleMaskFile);
-
   const mhost = $('maskMethod');
   if (mhost) mhost.querySelectorAll('.tw-mbtn').forEach((b) => {
     b.addEventListener('click', () => setMaskMethod(b.dataset.m));
@@ -1230,16 +1399,9 @@ function wireMaskMode() {
    font_scale）全是改字视图在用的同一套。这也是当初把翻译排在第三期的原因。
    ==================================================================== */
 
-const TR_ELS = {
-  canvas: 'trCanvas', img: 'trImg', drop: 'trDrop',
-  imgBox: 'trImgBox', zoom: 'trZoom', status: 'trStatus',
-  input: 'trInput', pick: 'trPick', pickText: 'trPickText',
-  name: 'trName', meta: 'trMeta',
-};
-
 const TR = {
-  file: null, name: '', objectUrl: '',
   imgW: 0, imgH: 0,
+  meta: '',             // 文件名旁那行（尺寸 + 识别耗时）
   sessionId: '',
   items: null,          // /api/analyze 的结果（含 style，重绘要用）
   pairs: [],            // [{ id, src, dst, on, fitted, warn, applied }]
@@ -1248,30 +1410,25 @@ const TR = {
   view: 'source',       // source | result
   outUrl: '',           // 重绘结果（data URL）
   busy: false,
-  fittedOnce: false,    // 只在第一张图 load 时「适应窗口」，换译文图时保持比例
   elapsed: null,
   model: '',
   serverReady: null,    // /api/text/status 的结论：null 还没探、false 明确不可用
   serverMsg: '',
 };
 
-/* 两个模式的元素 id 一组一份 */
-const trZoom = createZoom({
-  canvas: 'trCanvas', img: 'trImg', fit: 'trFit',
-  zin: 'trZoomIn', zout: 'trZoomOut', val: 'trZoomVal',
-});
-
 /* ------------------------------------------------------------ 展示 */
 
 /** 原图 / 译文图切换：两张图尺寸必然一致，直接换 src 最省事 */
 function switchTrView(v) {
-  const img = $('trImg');
+  const img = $('twImg');
   if (!TR.outUrl) v = 'source';
   TR.view = v;
-  const host = $('trView');
+  const host = $('twView');
   if (host) host.querySelectorAll('.tw-tbtn').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
-  if (!img || !TR.objectUrl) return;
-  const want = (v === 'result' && TR.outUrl) ? TR.outUrl : TR.objectUrl;
+  if (!img || !CUR.url) return;
+  // 重绘是异步的，跑完时用户可能已经切到取文字 / 打码了 —— 那时候画布上
+  // 必须是原图（共用画布之后，译文图绝不能漏到别的模式里去）。
+  const want = (v === 'result' && TR.outUrl && S.mode === 'translate') ? TR.outUrl : CUR.url;
   if (img.src !== want) img.src = want;
 }
 
@@ -1301,15 +1458,17 @@ function setTrButtons() {
   dis('trSavePng', n === 0);
   dis('trSaveJpg', n === 0);
   dis('trToEdit', n === 0);
-  const v = $('trView');
-  if (v) v.hidden = !TR.outUrl;
+  // 「译文 / 原图」只在翻译模式且有译文图时出现 —— 后台跑完重绘时用户可能
+  // 已经切走了，别把这个按钮亮到别的模式的头上。
+  const v = $('twView');
+  if (v) v.hidden = !TR.outUrl || S.mode !== 'translate';
 }
 
 function renderTrPairs() {
   const host = $('trPairs');
   if (!host) return;
   if (!TR.pairs.length) {
-    host.innerHTML = `<p class="tw-side-empty">${TR.file
+    host.innerHTML = `<p class="tw-side-empty">${CUR.file
       ? '没有识别到文字。换一张更清晰的图试试（文字太小、太糊都会识别不到）'
       : '上传图片后会列出识别到的每一行，翻译后可逐行修改'}</p>`;
     return;
@@ -1370,7 +1529,7 @@ function scheduleTrApply() {
   clearTimeout(trApplyTimer);
   trApplyTimer = setTimeout(() => {
     applyTranslation().catch((err) => {
-      setStatus(TR_ELS.status, `重绘失败：${String((err && err.message) || err)}`, 'err');
+      setStatus(ELS.status, `重绘失败：${String((err && err.message) || err)}`, 'err');
     });
   }, 650);
 }
@@ -1486,8 +1645,8 @@ async function checkTrStatus() {
     TR.serverReady = !!j.ready;
     TR.serverMsg = j.ready ? '' : [j.message, j.hint].filter(Boolean).join('　');
     // 只在"正停在翻译页签、还没选图、也不在忙"时提示 —— 否则会盖掉识别进度
-    if (!j.ready && S.mode === 'translate' && !TR.busy && !TR.file) {
-      setStatus(TR_ELS.status, `翻译暂不可用：${TR.serverMsg}`, 'err');
+    if (!j.ready && S.mode === 'translate' && !TR.busy && !CUR.file) {
+      setStatus(ELS.status, `翻译暂不可用：${TR.serverMsg}`, 'err');
     }
   } catch (_) { /* 离线 / 静态托管：不打扰 */ }
 }
@@ -1495,44 +1654,52 @@ async function checkTrStatus() {
 /** 识别完把状态条恢复成空 —— 但翻译本来就用不了时，把原因继续留在那儿 */
 function clearTrStatus() {
   if (TR.serverReady === false && TR.serverMsg) {
-    setStatus(TR_ELS.status, `翻译暂不可用：${TR.serverMsg}`, 'err');
+    setStatus(ELS.status, `翻译暂不可用：${TR.serverMsg}`, 'err');
     return;
   }
-  setStatus(TR_ELS.status, '');
+  setStatus(ELS.status, '');
 }
 
 /* ------------------------------------------------------------ 主流程 */
 
-async function handleTrFile(file) {
-  if (!file) return;
-  if (!/^image\//.test(file.type || '')) { setStatus(TR_ELS.status, '请选择图片文件（JPG / PNG / WebP）', 'err'); return; }
-  if (TR.busy) return;
-
-  TR.busy = true;
-  TR.file = file;
-  TR.name = file.name || 'image';
+/** 换图时清空翻译状态（图换了，识别项、译文图、对照表都作废） */
+function resetTr() {
+  TR.imgW = 0; TR.imgH = 0;
+  TR.meta = '';
   TR.sessionId = '';
   TR.items = null;
   TR.pairs = [];
   TR.outUrl = '';
   TR.elapsed = null;
-  TR.fittedOnce = false;
-  $(TR_ELS.name).textContent = TR.name;
-  $(TR_ELS.meta).textContent = '';
-  $(TR_ELS.pickText).textContent = '换一张';
+  TR.view = 'source';
   const sentBox = $('trSentBox');
   if (sentBox) { sentBox.hidden = true; sentBox.open = false; }
-  showImage(file, TR_ELS, trZoom, TR);
   renderTrPairs(); updateTrStats(); setTrButtons();
-  setStatus(TR_ELS.status, '正在识别…', 'busy');
+}
+
+async function runTrAnalyze(file) {
+  if (!file || TR.busy || !CUR.file) return;
+
+  TR.busy = true;
+  TR.imgW = 0; TR.imgH = 0;
+  TR.meta = '';
+  TR.sessionId = '';
+  TR.items = null;
+  TR.pairs = [];
+  TR.outUrl = '';
+  TR.elapsed = null;
+  const sentBox = $('trSentBox');
+  if (sentBox) { sentBox.hidden = true; sentBox.open = false; }
+  renderTrPairs(); updateTrStats(); setTrButtons();
+  setStatus(ELS.status, '正在识别…', 'busy');
 
   try {
     // 走 /api/analyze（而不是取文字用的 /api/text/detect）：翻译要按原样式重绘，
     // 必须拿字体 / 颜色 / 描边 / 字号，同时它会建会话给后面的 /api/apply 用。
     const fd = new FormData();
-    fd.append('file', file, TR.name);
+    fd.append('file', file, CUR.name);
     fd.append('merge_lines', 'true');
-    const res = await callLocal('/api/analyze', fd, (m) => setStatus(TR_ELS.status, m, 'busy'));
+    const res = await callLocal('/api/analyze', fd, (m) => setStatusFor('translate', m, 'busy'));
     if (!res || !res.session_id) throw new Error('本地引擎未提供识别能力，请刷新页面重试');
 
     TR.sessionId = res.session_id;
@@ -1542,16 +1709,19 @@ async function handleTrFile(file) {
     TR.pairs = TR.items.map((it) => ({
       id: it.id, src: it.text || '', dst: '', on: true, fitted: false, warn: '', applied: false,
     }));
-
-    $(TR_ELS.meta).textContent = `${res.width}×${res.height}`
+    TR.meta = `${res.width}×${res.height}`
       + (res.elapsed_ms != null ? ` · 识别 ${res.elapsed_ms}ms` : '');
+
     renderTrPairs(); updateTrStats(); setTrButtons();
-    if (TR.items.length) clearTrStatus();
-    else setStatus(TR_ELS.status, '没有识别到文字', 'err');
+    if (S.mode === 'translate') {
+      paintMeta();
+      if (TR.items.length) clearTrStatus();
+      else setStatus(ELS.status, '没有识别到文字', 'err');
+    }
   } catch (err) {
     const msg = String((err && err.message) || err);
     const waiting = window.WBLocal && !window.WBLocal.ready && !window.WBLocal.error;
-    setStatus(TR_ELS.status, waiting ? `本地引擎准备中… ${msg}` : `识别失败：${msg}`, 'err');
+    setStatusFor('translate', waiting ? `本地引擎准备中… ${msg}` : `识别失败：${msg}`, 'err');
   } finally {
     TR.busy = false;
     setTrButtons();
@@ -1561,7 +1731,7 @@ async function handleTrFile(file) {
 async function runTranslate() {
   if (TR.busy || !TR.items) return;
   const targets = TR.pairs.filter((p) => p.on !== false && String(p.src || '').trim());
-  if (!targets.length) { setStatus(TR_ELS.status, '没有需要翻译的文字', 'err'); return; }
+  if (!targets.length) { setStatus(ELS.status, '没有需要翻译的文字', 'err'); return; }
 
   TR.busy = true;
   setTrButtons();
@@ -1570,7 +1740,7 @@ async function runTranslate() {
   try {
     for (let i = 0; i < targets.length; i += TR_CHUNK) {
       const slice = targets.slice(i, i + TR_CHUNK);
-      setStatus(TR_ELS.status,
+      setStatus(ELS.status,
         `正在翻译… ${i} / ${targets.length}（首批要连上游，稍慢）`, 'busy');
       const out = await translateChunk(slice.map((p) => p.src));
       slice.forEach((p, k) => { p.dst = out[k]; });
@@ -1586,11 +1756,11 @@ async function runTranslate() {
       box.hidden = false;
     }
 
-    setStatus(TR_ELS.status, '正在按原样式重绘…', 'busy');
+    setStatus(ELS.status, '正在按原样式重绘…', 'busy');
     await applyTranslation();
-    setStatus(TR_ELS.status, '');
+    setStatus(ELS.status, '');
   } catch (err) {
-    setStatus(TR_ELS.status, `翻译失败：${String((err && err.message) || err)}`, 'err');
+    setStatus(ELS.status, `翻译失败：${String((err && err.message) || err)}`, 'err');
   } finally {
     TR.busy = false;
     renderTrPairs(); updateTrStats(); setTrButtons();
@@ -1623,8 +1793,8 @@ async function exportTr(fmt) {
   ctx.drawImage(img, 0, 0);
   const mime = fmt === 'jpg' ? 'image/jpeg' : 'image/png';
   const blob = await new Promise((res) => cv.toBlob(res, mime, 0.92));
-  if (!blob) { setStatus(TR_ELS.status, '导出失败：浏览器不支持该格式', 'err'); return; }
-  saveBlob(blob, `${baseName(TR.name)}-译文.${fmt}`);
+  if (!blob) { setStatus(ELS.status, '导出失败：浏览器不支持该格式', 'err'); return; }
+  saveBlob(blob, `${baseName(CUR.name)}-译文.${fmt}`);
 }
 
 /**
@@ -1637,20 +1807,20 @@ async function exportTr(fmt) {
  */
 async function sendToEdit() {
   const edits = buildTrEdits();
-  if (!TR.file || !TR.items || !Object.keys(edits).length) return;
-  if (!window.TextWS) { setStatus(TR_ELS.status, '本机存储不可用，无法交接', 'err'); return; }
+  if (!CUR.file || !TR.items || !Object.keys(edits).length) return;
+  if (!window.TextWS) { setStatus(ELS.status, '本机存储不可用，无法交接', 'err'); return; }
   try {
-    setStatus(TR_ELS.status, '正在交接给「无痕改字」…', 'busy');
-    const buf = await TR.file.arrayBuffer();
-    await TextWS.saveImage(buf, TR.file.type || 'image/png', TR.name);
+    setStatus(ELS.status, '正在交接给「无痕改字」…', 'busy');
+    const buf = await CUR.file.arrayBuffer();
+    await TextWS.saveImage(buf, CUR.file.type || 'image/png', CUR.name);
     await TextWS.saveState({
       sessionId: TR.sessionId,
-      fileName: TR.name,
+      fileName: CUR.name,
       backend: 'browser-wasm',
       items: TR.items,
       edits,
     });
-    setStatus(TR_ELS.status, '');
+    setStatus(ELS.status, '');
     // 先切视图再让它重读 —— 顺序反过来的话，restoreWorkspace 会把状态条
     // 写到改字视图上，而那时改字视图还没显示出来。
     if (window.WBEdit) {
@@ -1658,16 +1828,12 @@ async function sendToEdit() {
       if (window.WBEdit.reload) await window.WBEdit.reload();
     }
   } catch (err) {
-    setStatus(TR_ELS.status, `交接失败：${String((err && err.message) || err)}`, 'err');
+    setStatus(ELS.status, `交接失败：${String((err && err.message) || err)}`, 'err');
   }
 }
 
+/** 翻译面板上的控件（选图 / 拖拽那一层已由 wireStage 统一接管） */
 function wireTranslateMode() {
-  wireCommon(TR_ELS, trZoom, handleTrFile, {
-    // 换译文图时不要重新适应窗口，否则用户刚放大的地方会被弹回去
-    onLoad: () => { if (!TR.fittedOnce) { trZoom.setFit(); TR.fittedOnce = true; } },
-  });
-
   const run = $('trRunBtn');
   if (run) run.addEventListener('click', () => runTranslate());
   const sw = $('trSwapBtn');
@@ -1682,7 +1848,7 @@ function wireTranslateMode() {
     if (TR.outUrl) scheduleTrApply();
   });
 
-  const vh = $('trView');
+  const vh = $('twView');
   if (vh) vh.querySelectorAll('.tw-tbtn').forEach((b) => {
     b.addEventListener('click', () => switchTrView(b.dataset.v));
   });
@@ -1717,7 +1883,7 @@ window.WBText = {
   runTranslate() { return runTranslate(); },
   // 自检用：直接读遮盖层像素，判断"某一处到底盖住没有"
   maskPixel(x, y) {
-    const cv = $('maskCv'), img = $('maskImg');
+    const cv = $('twMaskCv'), img = $('twImg');
     if (!cv || !img || !img.naturalWidth) return null;
     const k = cv.width / img.naturalWidth;
     const d = cv.getContext('2d').getImageData(
@@ -1764,6 +1930,7 @@ function boot() {
   paintMode(initial);
   // 深链直接落在翻译模式时也要探一次（这条路不走 setMode）
   if (initial === 'translate') checkTrStatus();
+  wireStage();                        // 三模式共用的选图 / 拖拽 / 缩放，只挂一次
   wireCopyMode();
   wireMaskMode();
   wireTranslateMode();

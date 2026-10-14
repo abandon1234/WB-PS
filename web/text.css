@@ -153,6 +153,16 @@
   flex: 0 0 372px; width: 372px; min-height: 0;
   display: flex; flex-direction: column; background: var(--surface);
 }
+/* 切功能键时右栏轻微淡入 —— 让人看出是"同一页里换了工具"，
+   而不是整页跳转（左栏的图与缩放全程不动，这正是这次合并的目的） */
+@keyframes tw-side-in {
+  from { opacity: .4; transform: translateY(3px); }
+  to   { opacity: 1;  transform: none; }
+}
+.tw-side:not([hidden]) { animation: tw-side-in .16s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .tw-side:not([hidden]) { animation: none; }
+}
 .tw-side-head {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
   gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);
