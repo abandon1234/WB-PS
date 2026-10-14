@@ -147,5 +147,13 @@
 - 部署后线上自检：`curl -s "https://ps.ysw69.dpdns.org/static/index.html?cb=$(date +%s)"`
   grep 本次改动的特征符号（沙箱 curl 能通该域名）。
   `/` 应返回 200；`workers.dev` 返回码 000 属预期（已显式关闭）。
+  更硬的一招：**直接把 `tools/probe_text_onepage.mjs` 指向线上域名跑**
+  （`--base https://ps.ysw69.dpdns.org`）。它打桩了 `WBLocal.handle`，
+  不下载模型，7 秒一轮 28 项，等于一个"上线后功能自检"。
+- **`/image` 是兼容入口，双端必须同口径**：页面早并入 `/`（靠 hash 切视图）。
+  Python 侧在 `app/image_gen/routes.py` 的 `LEGACY_PAGE = {"/image": "#generate"}`。
+  **绝不能用 302 实现** —— fragment 不发给服务端，302 会丢锚点（`/image#projects`）；
+  必须返回极小 HTML 让浏览器端做 `location.replace("/" + location.hash)`。
 - git 只能走 SSH；`gh` CLI 在这台机器上不可用。
 - `cloudflare/public/static/`、`cloudflare/public/assets/` 是同步产物，已 gitignore，不要手工改。
+  `cloudflare/public/sw.js` **是有意跟踪的**（只有 static/ 与 assets/ 被忽略），改动要提交。
