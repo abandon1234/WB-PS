@@ -40,11 +40,11 @@ window.WBShell = (function () {
      生成相关的四个工具（自由生成 / 图像融合 / 人物写真 / 商品图生成）本质是
      同一件事 —— 提示词 + 可选参考图，差异只是提示词怎么写，所以并成一个入口。
 
-     「文字工坊」把"图里的文字"这件事按输出目标分成三个模式（取文字 / 打码 / 翻译），
-     共用同一次检测结果，所以也是一个入口，模式靠 hash 子键区分。 */
+     原来「文字工坊」是独立一项，现在已经并进「无痕改字」的右栏页签
+     （取文字 = 那份识别结果本身，打码 / 翻译 = 另外两个页签）——
+     它们共用同一张图、同一次识别、同一个画布，本就不该是两个入口。 */
   const NAV = [
     { key: 'edit', label: '无痕改字', href: '/#edit', icon: '#i-type', sec: '图片工具' },
-    { key: 'text', label: '文字工坊', href: '/#text', icon: '#i-shield', sec: '图片工具' },
     { key: 'generate', label: 'AI 生成', href: '/#generate', icon: '#i-spark', sec: '图片工具' },
     { key: 'projects', label: '作品库', href: '/#projects', icon: '#i-folder', sec: '资源', badge: true },
   ];
@@ -52,11 +52,11 @@ window.WBShell = (function () {
   /* 别名表：老链接与子模式 → 侧栏项 key，用来决定高亮哪一项。
      - #create/#combine/#portrait/#product：合并成「AI 生成」之前的老地址，
        收藏夹里的旧链接、外面发过的链接点进来高亮不能丢。
-     - #text-copy/#text-mask/#text-translate：文字工坊的三个模式，
-       它们不是独立的侧栏项，统一高亮到「文字工坊」。 */
+     - #text 家族：文字工坊的三个模式与它本身，一律高亮「无痕改字」；
+       具体该打开哪个页签由 app.js 的 LEGACY_PANE 决定。 */
   const LEGACY = {
     create: 'generate', combine: 'generate', portrait: 'generate', product: 'generate',
-    'text-copy': 'text', 'text-mask': 'text', 'text-translate': 'text',
+    text: 'edit', 'text-copy': 'edit', 'text-mask': 'edit', 'text-translate': 'edit',
   };
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>

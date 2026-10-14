@@ -21,18 +21,20 @@
   Web 端是空位。
 - 新功能落地顺序：①截图取文字 + 本机打码（共用同一次检测）→ ②图片翻译·原位换字 →
   ③截图转表格（单独评估，赢在准确率）。
-- **架构决策**：新建视图 `#text`「文字工坊」（NAV 一项，内含 取文字/打码/翻译 三模式），
-  **不要**把这三件事塞进「无痕改字」视图。理由：三者共用画布与检测结果；改字的 inspector
-  是重度样式编辑器，混进来会互相干扰。协作关系是「工坊批量 → 改字精修」。
+- **架构决策（已被后一步推翻，留档）**：当初定的是新建视图 `#text`「文字工坊」。
+  **现在没有 `#text` 视图了** —— 三件事并成「无痕改字」右栏的三个页签
+  （改字 / 打码 / 翻译），详见下面「右栏三页签」一节。当时选独立视图的理由
+  （三者共用画布与检测结果）依然成立，只是结论改成了"共用同一块右栏画布"。
 - 三个功能**前半段共用** `engine/index.js` 的 `detect()`（取文字/打码）或 `analyze()`
   （翻译，要样式）；**后半段**翻译直接复用现有 `applyEdits()`，连溢出处理都靠 `editParams()`
   已有的 `auto_fit` / `font_scale`，不新写排版逻辑。
 - 完整方案：`docs/plan-text-workshop.md`。
 - 已知硬约束：现装 `ch_PP-OCRv3`（中英），翻译第一期只支持中↔英，多语言识别是独立前置任务；
   打码不得宣称"不可还原"；翻译文本必须出境，UI 要明说。
-- **三期都已落地**（取文字 / 打码 / 翻译）。翻译的"重绘"完全复用 `applyEdits()`，
-  **没有新写排版逻辑**，所以按上面的例外判据**不需要双端对拍**：浏览器侧在 `web/text.js`
-  与 `cloudflare/src/routes/text.js`，Python 侧只补 `app/text_translate.py` 同构代理。
+- **三期都已落地**（取文字 / 打码 / 翻译，现已并成右栏三页签）。翻译的"重绘"完全复用
+  `applyEdits()`，**没有新写排版逻辑**，所以按上面的例外判据**不需要双端对拍**：
+  浏览器侧在 `web/panels.js` 与 `cloudflare/src/routes/text.js`，Python 侧只补
+  `app/text_translate.py` 同构代理。
 
 ## 几个别想当然的接口事实
 
@@ -48,45 +50,60 @@
 - 无头跑 `tools/probe_*.mjs` 时必须自动放行 `confirm()`（probe 顶部已监听
   `Page.javascriptDialogOpening`），否则对话框会把脚本挂死。
 
-## 文字工坊（#text）约定
+## 右栏三页签（原「文字工坊 #text」，2026-10-14 并入）
 
-- **是「一页 + 三个功能键」，不是三个页面**（2026-10-14 改）。三个模式共用**一块**
-  画布 DOM（`twCanvas/twImg/twOverlay/twMaskCv/twMarquee/twZoom/twStatus/twName/…`），
-  点按键只换右侧 `<aside class="tw-side" data-side="…">`。**别再往"一模式一套画布"
-  的方向退**：那样一定会重新长出「切模式就丢图、缩放归零」那堆问题。
-- **状态归属**：图片归 `CUR`（file/name/url/fittedOnce），三个模式只持有自己的识别
-  结果（`COPY` / `MASK` / `TR`）。每个模式另记一个 `meta`（尺寸+耗时），由 `paintMeta()`
-  按当前模式显示 —— 别各自去写 `twMeta`。
-- 三个模式**共用一次检测**：`detectOnce()` 按「文件名+大小+修改时间」签名缓存，
-  **且带在途去重**（检测跑到一半切模式，取文字与打码会同时来要同一张图的结果）。
-  别在模式里各自调 `runDetect`。
-- **识别按需补跑**：`LOADED = {copy, mask, translate}` 记「该模式算过哪个签名」，
-  `ensureLoaded(mode)` 只在没算过时跑一次。选图统一入口是 `openFile()`。
-- **共用一套 DOM 就必须有跨模式守卫**（踩过）：识别/翻译都是异步的，跑完时用户可能
-  已经切走了。写状态条用 `setStatusFor(mode, …)`；`paintMasks` / `renderMaskOverlay` /
-  `renderCopyOverlay` 开头判 `S.mode`；`wireMarquee` 的 pointerdown 只认 `mask`；
-  `switchTrView` 只在 `translate` 时换 `img.src`，离开翻译模式要 `ensureSourceImage()`
-  切回原图（否则取文字 / 打码会画在译文图上）。
-- 缩放语义只有一份：`createZoom()` 工厂（实例注册进 `ZOOMS`），**现在只有一个实例
-  `stageZoom`**，`onChange` 里按 `S.mode` 分发（只有打码要按新尺寸重绘遮盖层）。
-- **排查文字工坊 UI 的首选工具是 `tools/probe_text_onepage.mjs`**：打桩
-  `window.WBLocal.handle`，**不下载模型、几秒一轮**，覆盖 28 项（共用画布唯一性 /
-  切模式节点身份不变 / 检测只跑一次 / 遮盖层不漏到别的模式）。
-  ⚠️ 跑之前先确认本地服务活着：后台用 `&` 起的服务活不过那次 bash 调用，
-  表现为探针报 `chrome-error://chromewebdata/`，很容易误判成"沙箱拦了回环"。
+- **没有 `#text` 视图了**。改字视图 `#viewEdit` 的右栏 `aside.inspector` 是
+  「改字 / 打码 / 翻译」三个 `.pane`，共用左侧同一块画布、同一份识别结果。
+  侧栏回到三项（改字 / AI 生成 / 作品库）。
+- **公共契约就是 `S.edits`**：打码「抹字」= `edits[id]={text:''}`（改字里"留空仅擦除"
+  本来就是合法语义），翻译 = `edits[id]={text:译文, auto_fit:true}`。
+  **打码与翻译因此一行排版/重绘代码都没有新写**，走的是改字那条预览/导出通路。
+  这是整套改造的地基 —— 新加"对识别结果做什么"的功能，先想能不能表达成一批 edits。
+- **画布是三层的同尺寸位图**：`imgLayer → maskLayer → boxLayer`（`#scene` 里），
+  缩放平移由 `.scene` 的 CSS transform 承担。`sizeLayers()` 一次设三块，
+  **别再各处单独设 width/height**。
+- **色块 / 马赛克 / 模糊走前端 canvas 直接画**（`drawMasks()`，实时预览）；
+  **只有「抹字」走引擎**（`/api/text/erase`）。预览与导出共用同一个绘制函数，
+  导出时由 `burnMasks()` 烧进 blob —— **别写第二份绘制代码**。
+- 逻辑分文件：右栏两个页签全在 `web/panels.js`（`WBEdit` 是它唯一的口子），
+  画布与遮盖层在 `web/app.js`。
+- **移除视图时最容易忘的三处**：`web/index.html` 的 NAV 脚本位、`web/shell.js` 的
+  `NAV` / `LEGACY`、旧 hash 的兼容表。`LEGACY_PANE` 在 `app.js`，`LEGACY` 在 `shell.js`，
+  **两张表要一起改**（一个决定开哪个页签，一个决定侧栏高亮哪一项）。
+- 排查这一块的**首选工具是 `tools/probe_edit_panes.mjs`**：打桩 `WBLocal`，
+  **不下载模型、几秒一轮、33 项**，本地与线上都能跑（`--base https://ps.ysw69.dpdns.org`
+  就是"上线后功能自检"）。
 - **状态条显隐会改画布可用高度**（约 44px），所以 `setStatus` 在显隐变化时会主动
   对处于「适应窗口」的缩放实例补算一次。别只依赖 ResizeObserver + rAF ——
-  后台标签页 / 无头环境里 rAF 会被节流。新增带状态条的面板要沿用 `setStatus`。
+  后台标签页 / 无头环境里 rAF 会被节流。
 - **`engine/erase.js` 的 `meta.residual` 没有判别力**：它是「内区边缘能量 ÷
   外圈边缘能量」，纯色背景上恒在 100 量级（白底黑字实测也 100+）。要判断"擦干净
   没有"用**区域内灰度标准差**（localapi 的 `leftoverStd`，阈值 8）。
 - 打码的规则匹配是纯函数（`engine/mask.js`），**不参与渲染**，所以 Python 侧不需要
   再实现一份（同 `extract.js`，与下面那条「两条等价路径」的例外判据同源）。
-- 打码的遮盖：色块 / 马赛克 / 模糊是**前端 canvas 直接画**（实时预览，不走引擎）；
-  只有「抹字」走引擎。预览与导出共用 `drawMasks()`，别写第二份绘制代码。
+  它也不再挂 `window.WBMaskMod` 了（现挂 `window.WBTextEngine`，调试口）——
+  用例要它就直接 `import('/static/engine/mask.js')`，别绑内部调试口。
 
 ## 浏览器侧引擎的硬约束（踩过大坑）
 
+- **`window.WBLocal` 会被 `engine/boot.js` 整体覆盖**。boot.js 是 module（延迟执行），
+  末尾直接 `window.WBLocal = {...}`。所以**在文档创建前预注入桩会被它顶掉** ——
+  表现是打桩失效、页面真去下 40MB 模型（脚本挂在「正在识别…」再也不动），
+  或者调用计数一会儿有一会儿没有（时序不同，覆盖的先后也不同）。
+  正确做法是**锁成访问器属性**，让它的赋值落进空 setter：
+  ```js
+  Object.defineProperty(window, 'WBLocal', {
+    configurable: true, get: () => stub, set: () => {},
+  });
+  window.requestIdleCallback = () => 0;   // 见下条
+  ```
+  老做法（页面加载完再注入）只是"后覆盖"侥幸躲开，时序是脆的，别再抄。
+- **boot.js 的「空闲预热」绕不过门面**：`requestIdleCallback(() => ensureEngine(...))`
+  直接调内部函数，桩拦不住 → 每轮都会注册 SW、读 manifest、拉模型。
+  打桩类探针必须把 `requestIdleCallback` 关掉（只有 boot.js 用它，无副作用）。
+- **探针里"点了之后隔一会儿再读"要等条件，不要 `sleep` 固定时长**：本地模块命中
+  缓存是瞬时的，线上要走真网络 + 面板还有 120ms 去抖 → 同一项本地全绿、线上偶发红。
+  判据：本地绿线上红的用例，先怀疑固定 sleep。
 - **多通道 Mat 一律 `ptr(row)`，绝不用 `.data` 平铺下标**。`crop`/`clone` 出来的 BGR Mat
   实测 `isContinuous() === false`，但 `data.length` 恰好等于 `rows×cols×channels` ——
   平铺读写**不报错、看着有值、整体错位**。踩到的后果：`fillPatch` 没真刷上、
@@ -120,9 +137,10 @@
   再 `npx wrangler deploy` 才会上线。忘了同步 = 线上看不到改动（踩过一次）。
 - 同步脚本会 `rm -rf public` 后重建，所以**不要加 `--no-assets`**：那样会连 39MB 的
   `/assets/` 一起删掉且不补回。全量同步约几秒。
-- **同步脚本跑完必须看输出**，正常会有两行统计：「31 个文件，0.55 MB」「9 个文件，39.45 MB」
-  （31 = `web/` 下 34 个非 assets 文件减去 `README.md` / `engine-test.html` / `sw.js`
-  三个，`sw.js` 单独发到 `public/sw.js`）。数字随 `web/` 增删文件而变化，
+- **同步脚本跑完必须看输出**，正常会有两行统计：「30 个文件，0.50 MB」「9 个文件，39.45 MB」
+  （第一行 = `web/` 下的非 assets 文件减去 `README.md` / `engine-test.html` / `sw.js`，
+  `sw.js` 单独发到 `public/sw.js`；2026-10-14 文字工坊并进改字后从 31/0.55 变成 30/0.50 ——
+  去掉 text.js / text.css、加回 panels.js）。数字随 `web/` 增删文件而变化，
   **关键判据是有没有这两行、以及 `public/static` 存不存在**，别死记文件数。
   它先删 `public/` 再重建，**删成功但重建失败时 `public/static` 会整个不存在**
   （safe-delete shim 偶发失败，重跑一次即好）。只看到报错堆栈 = 没同步成功，
@@ -130,12 +148,10 @@
 - 改了 `web/` 下的页面或脚本，顺手把 `web/index.html` 里的 `?v=` 版本号 +0.1：
   `/static/*` 走静态资源层，版本号是防浏览器缓存读到旧脚本的唯一手段（`/assets/*`
   才有 immutable 头，页面脚本没有）。
-- **动态 `import()` 必须手动拼上同一个 `?v=`**：它不在 index.html 里，
-  浏览器不会替它带版本号，会吃到缓存里的旧模块（踩点：`web/text.js` 里取
-  `engine/extract.js`）。普通 `<script src>` 有版本号可依赖，动态 import 没有。
-- **动态 `import()` 的模块（如 `web/engine/extract.js`）要自己拼上当前 `?v=`**：
-  它不在 index.html 里，不会被版本号带上，不手动拼就会被浏览器吃旧脚本
-  （`web/text.js` 里的 `VER` 就是这么来的）。
+- **动态 `import()` 必须手动拼上同一个 `?v=`**：它不在 index.html 里，浏览器不会替它
+  带版本号，会吃到缓存里的旧模块。普通 `<script src>` 有版本号可依赖，动态 import 没有。
+  现在的写法在 `web/panels.js` 顶部：从自己的 `<script src>` 上把 `VER` 读出来，
+  再拼给 `engine/extract.js` / `engine/mask.js` —— 保持一个来源，别各写一份。
 - 无头跑 `tools/probe_views.mjs` 时传 `--profile <固定目录>` 可复用模型缓存，
   否则每次重新 profile 都要重下 40MB（首次 3~5 分钟，别误判成卡死）。
 - 每轮改动结束就 `git commit`；`git push` 之前必须先问用户（见 README 版本管理）。
@@ -147,9 +163,9 @@
 - 部署后线上自检：`curl -s "https://ps.ysw69.dpdns.org/static/index.html?cb=$(date +%s)"`
   grep 本次改动的特征符号（沙箱 curl 能通该域名）。
   `/` 应返回 200；`workers.dev` 返回码 000 属预期（已显式关闭）。
-  更硬的一招：**直接把 `tools/probe_text_onepage.mjs` 指向线上域名跑**
+  更硬的一招：**直接把 `tools/probe_edit_panes.mjs` 指向线上域名跑**
   （`--base https://ps.ysw69.dpdns.org`）。它打桩了 `WBLocal.handle`，
-  不下载模型，7 秒一轮 28 项，等于一个"上线后功能自检"。
+  不下载模型，7 秒一轮 33 项，等于一个"上线后功能自检"。
 - **`/image` 是兼容入口，双端必须同口径**：页面早并入 `/`（靠 hash 切视图）。
   Python 侧在 `app/image_gen/routes.py` 的 `LEGACY_PAGE = {"/image": "#generate"}`。
   **绝不能用 302 实现** —— fragment 不发给服务端，302 会丢锚点（`/image#projects`）；

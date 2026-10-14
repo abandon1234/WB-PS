@@ -1,12 +1,17 @@
 /**
- * 三视图（无痕改字 / 文字工坊 / 图像生成）切换验证
+ * 视图切换 + 文字纯函数层 回归验证
  *
- * 关注五件事：
- *   1. / 上各视图能按 hash 正确切换（改字 ↔ 文字工坊 ↔ 生成 ↔ 作品库）
+ * 关注四件事：
+ *   1. / 上各视图能按 hash 正确切换（改字 ↔ 生成 ↔ 作品库）
  *   2. 切换【不再重新加载页面】（这是当初合并的目的）
- *   3. 老链接 /image 与老 hash（#create/#combine…）仍能落到生成视图
- *   4. 文字工坊的三种模式深链（#text / #text-copy / #text-mask / #text-translate）
- *   5. 切换耗时（与合并前对比）
+ *   3. 老链接 /image、老 hash（#create/#combine…）、老 #text 家族仍能落到该去的地方
+ *   4. 切换耗时（与合并前对比）
+ *
+ * 文字抽取（extract.js）与打码规则（mask.js）是**纯函数**，不碰 DOM 也不下模型，
+ * 顺路在这里验 —— 它们与视图无关，放这儿比塞进 UI 探针更省事。
+ *
+ * 「右栏三页签」（改字 / 打码 / 翻译）的交互回归在 tools/probe_edit_panes.mjs，
+ * 那边用打桩引擎跑，几秒一轮。
  *
  *   node tools/probe_views.mjs [--base http://127.0.0.1:8788] [--profile <dir>]
  */
@@ -111,21 +116,19 @@ const viewState = () => cdp.evaluate(`(() => {
   const vis = (el) => !!(el && !el.hidden && getComputedStyle(el).display !== 'none');
   const e = document.getElementById('viewEdit');
   const i = document.getElementById('viewImages');
-  const t = document.getElementById('viewText');
   return {
-    edit: vis(e), images: vis(i), text: vis(t),
+    edit: vis(e), images: vis(i),
     hash: location.hash, path: location.pathname,
     genVisible: vis(document.getElementById('viewGenerate')),
     projVisible: vis(document.getElementById('viewProjects')),
-    copyVisible: vis(document.querySelector('#viewTextMain .tw-side[data-side="copy"]')),
-    maskVisible: vis(document.querySelector('#viewTextMain .tw-side[data-side="mask"]')),
-    transVisible: vis(document.querySelector('#viewTextMain .tw-side[data-side="translate"]')),
+    // 右栏当前打开的页签（老 #text* 深链要落在这里）
+    pane: (document.querySelector('#inspector > .pane:not([hidden])') || {}).dataset?.pane || '',
     bodyMode: document.body.className,
   };
 })()`);
 
 /** 每个视图对应的容器 id（clickNav 用它判断"切过去了没有"） */
-const VIEW_ID = { edit: 'viewEdit', images: 'viewImages', text: 'viewText' };
+const VIEW_ID = { edit: 'viewEdit', images: 'viewImages' };
 
 /** 点侧边栏导航项，并等目标视图真正显示出来（不是死等固定时长） */
 async function clickNav(key, expect) {
@@ -152,7 +155,7 @@ async function clickNav(key, expect) {
 
 try {
   console.log('='.repeat(74));
-  console.log(`三视图切换验证   ${BASE}/`);
+  console.log(`视图切换与文字纯函数验证   ${BASE}/`);
   console.log('='.repeat(74));
 
   await cdp.send('Page.navigate', { url: `${BASE}/` });
@@ -199,8 +202,8 @@ try {
     };
   })()`);
   console.log(`      侧栏项：${copy.navs.join(' / ')}`);
-  check('侧栏四项（改字 / 文字工坊 / AI 生成 / 作品库）',
-    copy.navs.join(',') === 'edit,text,generate,projects', copy.navs.join(','));
+  check('侧栏三项（改字 / AI 生成 / 作品库）',
+    copy.navs.join(',') === 'edit,generate,projects', copy.navs.join(','));
   check('生成区标题是「AI 图片生成」', copy.title === 'AI 图片生成', copy.title);
   check('上传区说明写明「不传就是纯文生图」',
     copy.hint.includes('不传就是纯文生图'), copy.hint);
@@ -208,32 +211,11 @@ try {
   check('空态提示已按合并后的语义改写',
     copy.tips.length === 3 && copy.tips[0].includes('不传参考图'), copy.tips[0] || '');
 
-  console.log('\n[2c] 文字工坊：模式切换');
-  const ctw = await clickNav('text', 'text');
-  const stw = await viewState();
-  check('点侧栏切到文字工坊视图',
-    stw.text === true && stw.edit === false && stw.images === false,
-    `${ctw.ms}ms · hash="${stw.hash}"`);
-  check('默认落在「取文字」模式',
-    stw.copyVisible === true && stw.maskVisible === false && stw.transVisible === false,
-    `hash="${stw.hash}"`);
-  check('文字工坊切换没有重新加载页面', docLoads === loadsAfterFirst,
-    `文档加载 ${docLoads} 次`);
+  /* 原来这里有一整段「文字工坊：模式切换 / 深链」。那个独立视图已经删掉，
+     三个功能并进无痕改字右栏页签 —— 相关断言全部移到 probe_edit_panes.mjs，
+     老 #text* 深链的兼容性在下文 [5] 里验。 */
 
-  // 点页签切模式：hash 要跟着变，否则这个地址分享出去就回不到同一个模式
-  const tabOk = await cdp.evaluate(`(() => {
-    const b = document.querySelector('.tw-tab[data-mode="mask"]');
-    if (!b) return false;
-    b.click();
-    return true;
-  })()`);
-  await sleep(400);
-  const sm = await viewState();
-  check('点「打码」页签切到打码模式',
-    tabOk && sm.maskVisible === true && sm.copyVisible === false, `hash="${sm.hash}"`);
-  check('切模式后 hash 同步为 #text-mask', sm.hash === '#text-mask', `hash="${sm.hash}"`);
-
-  console.log('\n[2d] 取文字：纯函数层（不依赖 OCR，用构造的框）');
+  console.log('\n[2c] 文字抽取：纯函数层（不依赖 OCR，用构造的框）');
   const pure = await cdp.evaluate(`(async () => {
     const m = await import('/static/engine/extract.js');
     const items = [
@@ -268,174 +250,11 @@ try {
   check('纯函数：贴得很近的片段不插空格', pure.tight === 'SN-20260918', pure.tight);
   check('纯函数：正常间距的英文词之间加空格', pure.loose === 'Hello world', pure.loose);
 
-  console.log('\n[2e] 取文字：喂样例图跑通识别 → 列表 → 导出');
-  // [2c] 结束在「打码」页签，先切回「取文字」—— 面板隐藏时量出来是 0×0，
-  // 下面的检测框对齐与缩放断言都要真实布局。
-  await cdp.evaluate("(() => { const b = document.querySelector('.tw-tab[data-mode=\"copy\"]');"
-    + ' if (b) b.click(); return true; })()');
-  await cdp.waitFor("(() => { const e = document.querySelector('#viewTextMain .tw-side[data-side=copy]');"
-    + " return !!(e && !e.hidden && e.getBoundingClientRect().width > 100); })()",
-    10000, '切回取文字模式');
-  await sleep(300);
-
-  await cdp.send('DOM.enable');
-  const doc = await cdp.send('DOM.getDocument', { depth: -1 });
-  const found = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#twInput' });
-  check('取文字：上传入口存在', !!found && !!found.nodeId, `nodeId=${found && found.nodeId}`);
-  const sample = path.resolve('samples/test_card.png');
-  check('取文字：样例图存在', fs.existsSync(sample), sample);
-  // 页面里要把样例图拼成长截图，而 /samples 并不在服务的路由里（只有 /static 与
-  // /assets）—— 直接把样例行内传进页面，探针就不再依赖"哪个静态前缀能取到样例图"。
-  const sampleDataUrl = 'data:image/png;base64,'
-    + fs.readFileSync(sample).toString('base64');
-
-  const t0det = Date.now();
-  await cdp.send('DOM.setFileInputFiles', { files: [sample], nodeId: found.nodeId });
-  await cdp.waitFor('!!(window.WBText && window.WBText.copy.result) || '
-    + '!!(window.WBLocal && window.WBLocal.error)', 240000, '取样识别完成');
-  const detMs = Date.now() - t0det;
-
-  const tp = await cdp.evaluate(`(() => {
-    const W = window.WBText, r = W.copy.result;
-    const norm = (el) => (el ? el.textContent.trim() : '');
-    return {
-      ok: !!r,
-      err: (window.WBLocal && window.WBLocal.error) ? String(window.WBLocal.error.message || '') : '',
-      count: r ? r.count : 0,
-      para: r ? r.paraCount : 0,
-      lines: W.lines(),
-      text: W.text(),
-      md: W.markdown(),
-      domRows: document.querySelectorAll('#copyLines .tw-line').length,
-      boxes: document.querySelectorAll('#twOverlay .tw-box').length,
-      stats: norm(document.getElementById('copyStats')),
-      meta: norm(document.getElementById('twMeta')),
-      foot: norm(document.querySelector('.tw-side-foot')),
-      txtOn: !document.getElementById('copyTxtBtn').disabled,
-      mdOn: !document.getElementById('copyMdBtn').disabled,
-      // 状态条共用一条，setStatus 会整个重写 innerHTML（里面的 span 没有 id），
-      // 所以直接读状态条本身的文本；收起时按空串算。
-      status: document.getElementById('twStatus').hidden
-        ? '' : norm(document.getElementById('twStatus')),
-    };
-  })()`);
-  tp.lines.forEach((l, i) => console.log(`        ${i + 1}. ${l}`));
-  console.log(`      ${tp.stats} · ${tp.meta} · 用时 ${detMs}ms`);
-
-  check('取文字：识别成功（本地引擎无错）', tp.ok === true && !tp.err, tp.err);
-  check('取文字：识别出行', tp.count > 0, `${tp.count} 行`);
-  check('取文字：右侧列表行数与识别行数一致', tp.domRows === tp.count,
-    `DOM ${tp.domRows} / 数据 ${tp.count}`);
-  check('取文字：左侧检测框数与行数一致', tp.boxes === tp.count, `框 ${tp.boxes}`);
-  check('取文字：第一行是页面大标题',
-    (tp.lines[0] || '').includes('产品使用说明书'), tp.lines[0] || '(空)');
-  check('取文字：联系方式那一行被完整取到（含中英混排）',
-    tp.text.includes('support@example.com'), '');
-  check('取文字：界面文本与导出文本一致',
-    tp.lines.every((l) => tp.text.includes(l)), '');
-  check('取文字：md 含标题层级',
-    /^## /m.test(tp.md), JSON.stringify((tp.md.split('\n').find((l) => l.startsWith('## ')) || '').slice(0, 30)));
-  check('取文字：导出按钮已启用', tp.txtOn === true && tp.mdOn === true);
-  check('取文字：界面标注「本机 / 不上传」',
-    /本机/.test(tp.foot) && /不上传/.test(tp.foot), tp.foot.slice(0, 40));
-  check('取文字：识别耗时已回报到界面', /识别 \d+ms/.test(tp.meta), tp.meta);
-  check('取文字：状态条收起（无残留「识别中」）', tp.status === '', tp.status);
-
-  console.log('\n[2f] 取文字：长截图默认收进可视区（缩放）');
-  // 复现用户报的问题：618×2560（1:4.14）的长截图按原宽铺开会有两千多 px 高，
-  // 得滚半天才看得全。这里在页面里现造一张同比例的长图（把样例图纵向拼 5 份），
-  // 走真实的 file input 路径，验「默认适应窗口 + 可放大 + 框不跑偏」。
-  const readGeo = () => cdp.evaluate(`(() => {
-    const c = document.getElementById('twCanvas'), i = document.getElementById('twImg');
-    const cs = getComputedStyle(c);
-    const availW = c.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    const availH = c.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    const ir = i.getBoundingClientRect();
-    const box = document.querySelector('#twOverlay .tw-box');
-    const br = box ? box.getBoundingClientRect() : null;
-    return {
-      nw: i.naturalWidth, nh: i.naturalHeight,
-      w: +ir.width.toFixed(1), h: +ir.height.toFixed(1),
-      availW: +availW.toFixed(1), availH: +availH.toFixed(1),
-      zval: (document.getElementById('twZoomVal') || {}).textContent || '',
-      ctlShown: !document.getElementById('twZoom').hidden,
-      boxes: document.querySelectorAll('#twOverlay .tw-box').length,
-      // 首行检测框相对图的位置 —— 缩放前后必须一样（百分比定位的意义所在）
-      boxRel: br ? { l: +((br.left - ir.left) / ir.width).toFixed(3),
-                     t: +((br.top - ir.top) / ir.height).toFixed(3) } : null,
-    };
-  })()`);
-
-  await cdp.evaluate(`(async () => {
-    const cv = document.createElement('canvas');
-    cv.width = 618; cv.height = 2560;
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 618, 2560);
-    const src = await new Promise((res, rej) => {
-      const im = new Image();
-      im.onload = () => res(im); im.onerror = rej;
-      im.src = ${JSON.stringify(sampleDataUrl)};
-    });
-    const h = src.height * (618 / src.width);
-    for (let k = 0; k < 5; k++) ctx.drawImage(src, 0, k * (h + 30), 618, h);
-    const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
-    const dt = new DataTransfer();
-    dt.items.add(new File([blob], 'tall_shot.png', { type: 'image/png' }));
-    const inp = document.getElementById('twInput');
-    inp.files = dt.files;
-    inp.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`);
-  await cdp.waitFor(`(() => { const i = document.getElementById('twImg');
-    const st = document.getElementById('twStatus');
-    return !!(i && i.naturalWidth === 618 && i.style.visibility !== 'hidden'
-      && st && st.hidden && !(window.WBText.copy.busy)); })()`,
-    90000, '长图已按适应窗口显示');
-  // 状态条收起会改变画布可用高度，代码里会补算一次「适应」—— 等那一拍落地再量，
-  // 否则量到的是"识别中、状态条还占着 44px"时的临时尺寸。
-  await sleep(400);
-
-  const fitted = await readGeo();
-  console.log(`      原图 ${fitted.nw}×${fitted.nh} → 显示 ${fitted.w}×${fitted.h}`
-    + `（可视区 ${fitted.availW}×${fitted.availH}）· 缩放 ${fitted.zval} · 框 ${fitted.boxes}`);
-  check('长截图：显示尺寸没有超出可视区（不再按宽度铺开）',
-    fitted.w <= fitted.availW + 1 && fitted.h <= fitted.availH + 1,
-    `${fitted.w}×${fitted.h} vs ${fitted.availW}×${fitted.availH}`);
-  check('长截图：长边方向接近铺满（没被缩得过小）',
-    Math.max(fitted.w / fitted.availW, fitted.h / fitted.availH) > 0.9,
-    `占比 ${(Math.max(fitted.w / fitted.availW, fitted.h / fitted.availH) * 100).toFixed(0)}%`);
-  check('长截图：默认不是 100%', fitted.zval !== '100%' && fitted.zval !== '', fitted.zval);
-  check('长截图：缩放控件已显示', fitted.ctlShown === true);
-
-  await cdp.evaluate("document.getElementById('twZoomIn').click()");
-  await sleep(250);
-  const zoomed = await readGeo();
-  check('长截图：点 + 能明显放大（不是从 25% 挪到 25%）',
-    zoomed.w > fitted.w * 1.1, `${fitted.w}×${fitted.h} → ${zoomed.w}×${zoomed.h} · ${zoomed.zval}`);
-  check('长截图：放大后检测框仍贴原位（百分比定位不跑偏）',
-    !fitted.boxRel || !zoomed.boxRel
-      || (Math.abs(fitted.boxRel.l - zoomed.boxRel.l) < 0.01
-          && Math.abs(fitted.boxRel.t - zoomed.boxRel.t) < 0.01),
-    `${fitted.boxRel && fitted.boxRel.l} → ${zoomed.boxRel && zoomed.boxRel.l}`);
-
-  await cdp.evaluate("document.getElementById('twZoomVal').click()");
-  await sleep(250);
-  const full = await readGeo();
-  check('长截图：点比例读数回到 100%（与原图 1:1）',
-    full.w === full.nw && full.h === full.nh && full.zval === '100%',
-    `${full.w}×${full.h} vs 原图 ${full.nw}×${full.nh} · ${full.zval}`);
-
-  await cdp.evaluate("document.getElementById('twFit').click()");
-  await sleep(250);
-  const refit = await readGeo();
-  check('长截图：点「适应」收回可视区',
-    refit.w <= refit.availW + 1 && refit.h <= refit.availH + 1
-      && Math.abs(refit.w - fitted.w) <= 1,
-    `${refit.w}×${refit.h} · ${refit.zval}`);
-
-  console.log('\n[2g] 打码：敏感信息识别（纯函数层）');
-  const mkPure = await cdp.evaluate(`(() => {
-    const M = window.WBMaskMod;
+  console.log('\n[2d] 打码规则：纯函数层（不依赖 OCR，用构造的行）');
+  const mkPure = await cdp.evaluate(`(async () => {
+    // 直接 import 模块，不依赖页面有没有把 mask.js 挂到 window 上
+    // （panel 那边挂的是 window.WBTextEngine，属于调试口，不该被用例绑住）
+    const M = await import('/static/engine/mask.js');
     const ln = (text) => [{ id: 0, text, rect: { x: 10, y: 20, w: 200, h: 24 },
       items: [{ id: 0, text, rect: { x: 10, y: 20, w: 200, h: 24 } }] }];
     const ids = (hits) => hits.map((h) => h.ruleId).join(',');
@@ -481,396 +300,6 @@ try {
   check('打码 · 相邻遮盖矩形合并（半透明叠加不会叠深）',
     mkPure.merged === '1:95', mkPure.merged);
 
-  console.log('\n[2h] 打码：识别 → 遮盖 → 导出');
-  await cdp.evaluate(`document.querySelector('.tw-tab[data-mode="mask"]').click()`);
-  await cdp.waitFor("(() => { const p = document.querySelector('#viewTextMain .tw-side[data-side=mask]');"
-    + " return !!(p && !p.hidden); })()", 10000, '打码面板可见');
-
-  // 页面里现造一张含敏感信息的图（不依赖样例文件）
-  await cdp.evaluate(`(async () => {
-    const cv = document.createElement('canvas');
-    cv.width = 820; cv.height = 430;
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 820, 430);
-    ctx.fillStyle = '#111'; ctx.font = '24px sans-serif';
-    ['姓名：张三', '手机：13800138000', '身份证：110101199003078888',
-     '邮箱：zhangsan@example.com', '银行卡：6222021234567890123',
-     '订单号：202610131234567', '金额：1920 元'].forEach((t, i) => {
-      ctx.fillText(t, 30, 52 + i * 52);
-    });
-    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
-    const dt = new DataTransfer();
-    dt.items.add(new File([blob], 'mask_card.png', { type: 'image/png' }));
-    const inp = document.getElementById('twInput');
-    inp.files = dt.files;
-    inp.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`);
-  await cdp.waitFor('(() => { const M = window.WBText.mask;'
-    + ' return !!(M.lines && !M.busy); })()', 90000, '打码识别完成');
-  await sleep(500);
-
-  const mk = await cdp.evaluate(`(() => {
-    const M = window.WBText.mask;
-    const h = M.hits.find((x) => x.label === '手机号');
-    return {
-      labels: M.hits.map((x) => x.label).join(','),
-      count: M.hits.length,
-      on: M.hits.filter((x) => x.on !== false).length,
-      stats: document.getElementById('maskStats').textContent,
-      // 命中区域中心 与 一处空白 的遮盖层像素
-      hitPx: h ? window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2) : null,
-      blankPx: window.WBText.maskPixel(760, 24),
-      boxCount: document.querySelectorAll('#twOverlay .tw-box').length,
-    };
-  })()`);
-  console.log(`      命中：${mk.labels} · ${mk.stats} · 框 ${mk.boxCount}`);
-  // 不断言"恰好 4 处"：OCR 若把"订单号：202610131234567"里的数字单独切成一个框，
-  // 那它按规则（长数字串必须整框）**就该**被打上——那是预期的保守行为。
-  check('打码 · 手机号 / 身份证 / 邮箱 / 银行卡 都被识别出来',
-    ['手机号', '身份证', '邮箱', '银行卡'].every((l) => mk.labels.includes(l)),
-    mk.labels);
-  check('打码 · 命中框与命中项一一对应', mk.boxCount === mk.count, `框 ${mk.boxCount} / 项 ${mk.count}`);
-  check('打码 · 命中区域已被盖住（色块 #111）',
-    mk.hitPx && mk.hitPx[0] < 40 && mk.hitPx[1] < 40 && mk.hitPx[2] < 40 && mk.hitPx[3] > 200,
-    JSON.stringify(mk.hitPx));
-  check('打码 · 未命中区域没有被碰（遮盖层透明）',
-    mk.blankPx && mk.blankPx[3] === 0, JSON.stringify(mk.blankPx));
-
-  // 逐项开关：取消第一项 → 那块恢复透明；再勾回来 → 又盖上
-  await cdp.evaluate("document.querySelector('#maskHits .tw-hit input').click()");
-  await sleep(350);
-  const off1 = await cdp.evaluate(`(() => {
-    const M = window.WBText.mask;
-    const h = M.hits.find((x) => x.label === '手机号');
-    return { on: h.on !== false, px: window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2),
-             stats: document.getElementById('maskStats').textContent };
-  })()`);
-  check('打码 · 取消勾选后该处不再被盖（其余照旧）',
-    off1.on === false && off1.px && off1.px[3] === 0, `${off1.stats} · ${JSON.stringify(off1.px)}`);
-  await cdp.evaluate("document.querySelector('#maskHits .tw-hit input').click()");
-  await sleep(350);
-  const on1 = await cdp.evaluate(`(() => {
-    const M = window.WBText.mask;
-    const h = M.hits.find((x) => x.label === '手机号');
-    const px = window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2);
-    return { on: h.on !== false, a: px[3] };
-  })()`);
-  check('打码 · 重新勾选后恢复遮盖', on1.on === true && on1.a > 200, JSON.stringify(on1));
-
-  // 换样式：马赛克 / 模糊仍然盖住（不透明），像素与色块不同
-  const styles = {};
-  for (const m of ['mosaic', 'blur']) {
-    await cdp.evaluate(`document.querySelector('.tw-mbtn[data-m="${m}"]').click()`);
-    await sleep(450);
-    styles[m] = await cdp.evaluate(`(() => {
-      const M = window.WBText.mask;
-      const h = M.hits.find((x) => x.label === '手机号');
-      return window.WBText.maskPixel(h.rect.x + h.rect.w / 2, h.rect.y + h.rect.h / 2);
-    })()`);
-  }
-  check('打码 · 马赛克档在该处确实画了东西',
-    styles.mosaic && styles.mosaic[3] > 200, JSON.stringify(styles.mosaic));
-  check('打码 · 模糊档在该处确实画了东西', styles.blur && styles.blur[3] > 200,
-    JSON.stringify(styles.blur));
-
-  // 抹字档：走引擎擦除，并要求它自报"还有没有起伏"
-  await cdp.evaluate("document.querySelector('.tw-mbtn[data-m=\"erase\"]').click()");
-  await cdp.waitFor('!!window.WBText.mask.eraseImg', 120000, '抹字结果就绪');
-  await sleep(400);
-  const er = await cdp.evaluate(`(() => {
-    const M = window.WBText.mask;
-    return { n: (M.leftovers || []).length,
-             left: M.leftovers,
-             hasImg: !!M.eraseImg };
-  })()`);
-  check('打码 · 抹字走引擎并返回逐块残留度量',
-    er.hasImg && er.n >= 4, `块数 ${er.n} · ${JSON.stringify(er.left)}`);
-  check('打码 · 纯白底上的抹字结果是干净的（残留度量接近 0）',
-    er.left.filter((v) => v <= 8).length >= 3,
-    JSON.stringify(er.left));
-
-  // 导出：canvas 重编码后不应带 APP1(Exif) 段
-  const exif = await cdp.evaluate(`(async () => {
-    // 先造一张"带 EXIF 风格头"的输入，确认元数据不会跟着出去
-    const src = document.createElement('canvas');
-    src.width = 200; src.height = 120;
-    const sc = src.getContext('2d');
-    sc.fillStyle = '#fff'; sc.fillRect(0, 0, 200, 120);
-    sc.fillStyle = '#111'; sc.font = '20px sans-serif'; sc.fillText('13800138000', 12, 50);
-    const blob = await new Promise((r) => src.toBlob(r, 'image/jpeg', 0.92));
-    const buf = new Uint8Array(await blob.arrayBuffer());
-    let app1 = false, i = 2;
-    while (i + 4 < buf.length) {
-      if (buf[i] !== 0xFF) break;
-      const mk2 = buf[i + 1];
-      if (mk2 === 0xD8 || mk2 === 0x01 || (mk2 >= 0xD0 && mk2 <= 0xD7)) { i += 2; continue; }
-      if (mk2 === 0xDA) break;
-      const len = (buf[i + 2] << 8) | buf[i + 3];
-      if (mk2 === 0xE1) app1 = true;
-      i += 2 + len;
-    }
-    return { bytes: buf.length, app1 };
-  })()`);
-  check('打码 · 导出的 JPEG 不含 APP1(Exif) 段（canvas 重编码天然抹掉元信息）',
-    exif.app1 === false && exif.bytes > 500, `${exif.bytes} bytes · app1=${exif.app1}`);
-
-  console.log('\n[2j] 抹字：纯色底的擦净质量（刻意喂一张"已经有残影"的输入）');
-  // 现造一张账单式的图：一条超长数字串（必被"长数字串"规则命中）+ 上下两行
-  // 只作对照的文字 + 一串**淡灰短划**当"上一轮没擦净留下的残影"。
-  // 断言的是不变量而不是某个实现：目标行连同它的邻接空白带里不许有任何残留，
-  // 而框外的对照文字一个像素都不许动。旧的"外圈中位数取色"一旦被灰像素带偏，
-  // 这里会填出一块灰面 —— 框内灰度极差立刻超标。
-  await cdp.evaluate(`(async () => {
-    const cv = document.createElement('canvas');
-    cv.width = 660; cv.height = 260;
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 660, 260);
-    ctx.fillStyle = '#333'; ctx.font = '20px sans-serif';
-    ctx.fillText('收款方示例商户', 30, 66);
-    ctx.fillText('备注本行仅作对照', 30, 216);
-    ctx.font = '20px monospace';
-    ctx.fillStyle = '#222';
-    ctx.fillText('131307010252000052610010735829', 30, 146);
-    ctx.fillStyle = '#ececec';
-    const dash = [14, 9, 31, 17, 6, 25, 40, 12, 22, 8, 35, 19, 11, 28];
-    let x = 32;
-    for (let i = 0; i < dash.length; i++) {
-      ctx.fillRect(x, 136 + (i % 4) * 3, dash[i], 2);
-      x += dash[i] + 6;
-    }
-    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
-    window.__dbgIn = cv.toDataURL('image/png');   // 诊断：把真实输入图带出来
-    const dt = new DataTransfer();
-    dt.items.add(new File([blob], 'erase_card.png', { type: 'image/png' }));
-    const inp = document.getElementById('twInput');
-    inp.files = dt.files;
-    inp.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`);
-  await cdp.waitFor('(() => { const M = window.WBText.mask;'
-    + ' return !!(M.lines && !M.busy); })()', 90000, '抹字用例识别完成');
-  await sleep(400);
-  await cdp.evaluate("document.querySelector('.tw-mbtn[data-m=\"erase\"]').click()");
-  await cdp.waitFor('!!window.WBText.mask.eraseImg', 120000, '抹字结果就绪');
-  await sleep(300);
-
-  try {
-    const inUrl = await cdp.evaluate('window.__dbgIn || ""');
-    if (inUrl && String(inUrl).indexOf(',') > 0) {
-      const dir = path.resolve('tools/.dbg-out');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'erase_card_in.png'),
-        Buffer.from(String(inUrl).split(',')[1], 'base64'));
-      console.log('      已保存输入图 tools/.dbg-out/erase_card_in.png');
-    }
-  } catch (e) { console.log('      保存输入图失败:', e.message); }
-
-  const erMeta = await cdp.evaluate(`(() => {
-    const M = window.WBText.mask;
-    return { levels: M.levels, inks: M.inks, masks: M.masks, resids: M.resids,
-      sweep: M.swept, methods: M.methods };
-  })()`);
-  console.log('      引擎 meta:', JSON.stringify(erMeta));
-
-  const er2 = await cdp.evaluate(`(() => {
-    const M = window.WBText.mask;
-    const hit = M.hits.find((h) => h.label === '长数字串');
-    if (!hit) return { found: false, labels: M.hits.map((h) => h.label).join(',') };
-    const r = hit.rect;
-    // 目标行内缩 1/4 取样：避开 OCR 框边缘，只问"原来有字/有残影的地方干净了没"
-    const inner = window.WBText.eraseBox(r.x + r.w * 0.25, r.y + r.h * 0.25,
-      r.w * 0.5, r.h * 0.5);
-    // 引擎实际拿到的框是 OCR 框外扩 2px（toRects 的 pad），残留度量按那个框算
-    const whole = window.WBText.eraseBox(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
-    const up = window.WBText.eraseBox(r.x, Math.max(0, r.y - 10), r.w, 6);
-    const dn = window.WBText.eraseBox(r.x, r.y + r.h + 4, r.w, 6);
-    const c1 = window.WBText.eraseBox(26, 46, 220, 28);
-    const c2 = window.WBText.eraseBox(26, 196, 220, 28);
-    return {
-      found: true, on: hit.on !== false, labels: M.hits.map((h) => h.label).join(','),
-      rect: [r.x, r.y, r.w, r.h], inner, whole, up, dn, c1, c2,
-      peaks: M.peaks, worst: M.worst,
-      stats: document.getElementById('maskStats').textContent,
-    };
-  })()`);
-  console.log(`      靶子框 ${er2.rect ? JSON.stringify(er2.rect) : '-'} · peak=${JSON.stringify(er2.peaks)}`
-    + ` · 全框=${JSON.stringify(er2.whole)} · ${er2.stats}`);
-  check('抹字 · 超长数字串被识别为命中（本例的靶子）',
-    er2.found && er2.on === true, er2.labels);
-  check('抹字 · 目标行（含预先掺入的淡灰残影）擦净且底色一致 —— 框内极差 ≤ 3',
-    er2.found && er2.inner && er2.inner.min >= 252
-      && (er2.inner.max - er2.inner.min) <= 3, JSON.stringify(er2.inner));
-  check('抹字 · 目标行上下邻接的空白带也没有被带出的灰',
-    er2.found && er2.up && er2.dn && er2.up.min >= 252 && er2.dn.min >= 252,
-    er2.found ? `${JSON.stringify(er2.up)} / ${JSON.stringify(er2.dn)}` : '未命中');
-  check('抹字 · 框外的上下两行对照文字一个像素都没被碰',
-    er2.found && er2.c1 && er2.c2 && er2.c1.min < 90 && er2.c2.min < 90,
-    er2.found ? `${JSON.stringify(er2.c1)} / ${JSON.stringify(er2.c2)}` : '未命中');
-  check('抹字 · 逐块残留度量都在阈值内（界面上不会出现"没擦净"告警）',
-    er2.found && (er2.peaks || []).every((v) => v === null || v <= 16),
-    JSON.stringify(er2.peaks));
-  check('抹字 · 状态条如实报"已擦净"',
-    er2.found && String(er2.stats).indexOf('抹字已擦净') >= 0, er2.stats);
-
-  console.log('\n[2i] 翻译：analyze → 上游翻译 → 复用 applyEdits 原位重绘');
-  await cdp.evaluate(`document.querySelector('.tw-tab[data-mode="translate"]').click()`);
-  await cdp.waitFor("(() => { const p = document.querySelector('#viewTextMain .tw-side[data-side=translate]');"
-    + " return !!(p && !p.hidden); })()", 10000, '翻译面板可见');
-
-  // 上游**不测真实服务**（生图 API 失效的教训在前）：把 /api/text/translate 拦下来
-  // 返回固定译文。第一行刻意给一段超长译文，用来验证「过宽时缩字号」这条
-  // 已有通路真的被复用上了。
-  await cdp.evaluate(`(() => {
-    if (window.__trOrigFetch) return true;
-    window.__trOrigFetch = window.fetch;
-    window.__trCalls = 0;
-    window.fetch = function (url, opt) {
-      const u = String(url && url.url ? url.url : url);
-      if (u.indexOf('/api/text/translate') >= 0 && (!opt || !opt.method || opt.method === 'POST')) {
-        window.__trCalls++;
-        const body = JSON.parse((opt && opt.body) || '{}');
-        const texts = (body.texts || []).map((t, i) => (i === 0
-          ? ('A deliberately overlong translation used to verify that the existing auto-fit shrink path is reused. '.repeat(2))
-          : ('EN:' + t)));
-        return Promise.resolve(new Response(JSON.stringify({
-          texts, model: 'mock-text-model', from: body.from, to: body.to,
-          finish_reason: 'stop', truncated: false,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      return window.__trOrigFetch.apply(this, arguments);
-    };
-    return true;
-  })()`);
-
-  // 页面里现造一张多行中文图（不依赖样例文件与外部字体）
-  await cdp.evaluate(`(async () => {
-    const cv = document.createElement('canvas');
-    cv.width = 760; cv.height = 360;
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 760, 360);
-    ctx.fillStyle = '#111'; ctx.font = '26px sans-serif';
-    ['你好世界', '这是一个测试', '图片翻译功能', '第四行文字'].forEach((t, i) => {
-      ctx.fillText(t, 30, 58 + i * 62);
-    });
-    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
-    const dt = new DataTransfer();
-    dt.items.add(new File([blob], 'translate_card.png', { type: 'image/png' }));
-    const inp = document.getElementById('twInput');
-    inp.files = dt.files;
-    inp.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`);
-  await cdp.waitFor('(() => { const T = window.WBText.translate;'
-    + ' return !!(T.items && !T.busy); })()', 120000, '翻译模式识别完成');
-  await sleep(300);
-
-  const t0 = await cdp.evaluate(`(() => {
-    const T = window.WBText.translate;
-    return {
-      n: T.items.length,
-      pairs: window.WBText.trPairs().length,
-      firstSrc: T.pairs[0] ? T.pairs[0].src : '',
-      runEnabled: !document.getElementById('trRunBtn').disabled,
-      viewHidden: document.getElementById('twView').hidden,
-    };
-  })()`);
-  console.log(`      识别 ${t0.n} 行 · 首行「${t0.firstSrc}」`);
-  check('翻译 · 走 analyze 通道拿到 items 并逐行展开', t0.n > 0 && t0.pairs === t0.n,
-    `${t0.n} 行 / ${t0.pairs} 对照项`);
-  check('翻译 · 识别结果与「取文字」同一份（首行是完整短语，未被切碎）',
-    t0.firstSrc.length >= 2, t0.firstSrc);
-  check('翻译 · 未翻译前没有译文可看，翻译按钮已可用', t0.runEnabled === true && t0.viewHidden === true);
-
-  // 点「翻译」：内部会走 mock 上游 → 写回 edit → 调 /api/apply 重绘
-  await cdp.evaluate("document.getElementById('trRunBtn').click()");
-  await cdp.waitFor('(() => { const T = window.WBText.translate;'
-    + ' return !!(T.outUrl && !T.busy); })()', 180000, '翻译 + 重绘完成');
-  await sleep(500);
-
-  const t1 = await cdp.evaluate(`(() => {
-    const T = window.WBText.translate;
-    const img = document.getElementById('twImg');
-    const sentBox = document.getElementById('trSentBox');
-    return {
-      calls: window.__trCalls,
-      dst: T.pairs.map((p) => p.dst),
-      fitted: T.pairs.filter((p) => p.fitted).length,
-      applied: window.WBText.trPairs().filter((p) => p.on !== false).length,
-      edits: Object.keys(window.WBText.trEdits()).length,
-      imgIsResult: img.src === T.outUrl,
-      toggleShown: document.getElementById('twView').hidden === false,
-      saveEnabled: !document.getElementById('trSavePng').disabled,
-      toEditEnabled: !document.getElementById('trToEdit').disabled,
-      sentShown: !sentBox.hidden,
-      sentText: (document.getElementById('trSent').textContent || '').split('\\n')[0],
-      stats: document.getElementById('trStats').textContent,
-    };
-  })()`);
-  console.log(`      上游调用 ${t1.calls} 次 · ${t1.stats}`);
-  check('翻译 · 上游译文写回了每一行（mock 前缀可见）',
-    t1.dst.length === t0.n && t1.dst.every((d) => d && d.trim().length),
-    JSON.stringify(t1.dst.slice(0, 2)));
-  check('翻译 · 译文原样进入 edit（buildTrEdits 逐行生成）',
-    t1.edits === t0.n, `${t1.edits} 条 edit`);
-  check('翻译 · 长译文触发了「过宽缩字号」（复用现有 auto_fit 通路）',
-    t1.fitted >= 1, `缩字号 ${t1.fitted} 处`);
-  check('翻译 · 重绘结果已显示（画布换成译文图，原图/译文可切）',
-    t1.imgIsResult === true && t1.toggleShown === true);
-  check('翻译 · 导出口已打开', t1.saveEnabled === true && t1.toEditEnabled === true);
-  check('翻译 · 「本次发送出去的文字」把实际内容亮了出来',
-    t1.sentShown === true && t1.sentText.startsWith('1. '), t1.sentText);
-
-  // 原图 / 译文 切换：换的是同一张 <img> 的 src，尺寸一致、比例不该被重置
-  await cdp.evaluate("document.querySelector('#twView .tw-tbtn[data-v=\"source\"]').click()");
-  await sleep(300);
-  const tSrc = await cdp.evaluate(`(() => {
-    const T = window.WBText.translate, img = document.getElementById('twImg');
-    // 原图是 blob:（选图时 createObjectURL），译文图是 data:（引擎返回）
-    return { isSource: img.src.startsWith('blob:'), k: document.querySelector('#twZoomVal').textContent };
-  })()`);
-  await cdp.evaluate("document.querySelector('#twView .tw-tbtn[data-v=\"result\"]').click()");
-  await sleep(300);
-  const tRes = await cdp.evaluate(`(() => {
-    const T = window.WBText.translate, img = document.getElementById('twImg');
-    return { isResult: img.src === T.outUrl, k: document.querySelector('#twZoomVal').textContent };
-  })()`);
-  check('翻译 · 切到「原图」看到的是原图', tSrc.isSource === true, `缩放 ${tSrc.k}`);
-  check('翻译 · 切回「译文」看到的还是译文图（且缩放没被重置）',
-    tRes.isResult === true && tRes.k === tSrc.k, `${tSrc.k} → ${tRes.k}`);
-
-  // 手改译文：改完应当自动重绘（去抖 650ms）
-  const before = await cdp.evaluate('window.WBText.translate.outUrl.length');
-  await cdp.evaluate(`(() => {
-    const ta = document.querySelector('#trPairs .tw-pair textarea');
-    ta.value = 'Edited by hand';
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-    return true;
-  })()`);
-  await cdp.waitFor(`window.WBText.translate.pairs[0].dst === 'Edited by hand'`, 5000, '手改译文已写入状态');
-  await sleep(1800);
-  const t2 = await cdp.evaluate(`(() => {
-    const T = window.WBText.translate;
-    return { dst: T.pairs[0].dst, len: T.outUrl.length, applied: T.pairs[0].applied };
-  })()`);
-  check('翻译 · 手动改译文后自动重绘', t2.dst === 'Edited by hand' && t2.applied === true && t2.len > 1000,
-    `${before} → ${t2.len} bytes`);
-
-  // 交接：发送到「无痕改字」继续精修
-  await cdp.evaluate("document.getElementById('trToEdit').click()");
-  await cdp.waitFor(`(() => { const e = document.getElementById('viewEdit');`
-    + ` return !!(e && !e.hidden && window.WBEdit.items && window.WBEdit.items.length); })()`,
-    90000, '改字视图接管了翻译结果');
-  const t3 = await cdp.evaluate(`(() => ({
-    view: document.getElementById('viewEdit').hidden === false,
-    items: window.WBEdit.items.length,
-    edits: Object.keys(window.WBEdit.edits).length,
-    status: (document.getElementById('statusText') || {}).textContent || '',
-  }))()`);
-  check('翻译 · 能交接到「无痕改字」继续精修（同一会话，id 对得上）',
-    t3.view === true && t3.items === t0.n && t3.edits >= 1,
-    `items ${t3.items} · edits ${t3.edits}`);
-
   console.log('\n[3] 点「作品库」');
   const c2 = await clickNav('projects', 'images');
   const s2 = await viewState();
@@ -901,22 +330,30 @@ try {
     s5.path === '/' && s5.hash === '#projects' && s5.images === true,
     `${s5.path}${s5.hash}`);
 
+  // 文字工坊并进「无痕改字」右栏之后，它那套老 hash 仍要能落地：
+  // 落到改字视图 + 当场打开对应页签，hash 原样保留（刷新/分享回来还在同一页）
   await cdp.send('Page.navigate', { url: `${BASE}/#text-translate` });
   await sleep(2500);
   const s6 = await viewState();
-  check('深链 /#text-translate 直达翻译模式',
-    s6.text === true && s6.transVisible === true && s6.copyVisible === false,
-    `hash="${s6.hash}"`);
+  check('老深链 /#text-translate 落到改字视图并打开翻译页签',
+    s6.edit === true && s6.images === false && s6.pane === 'translate',
+    `hash="${s6.hash}" pane=${s6.pane}`);
+  check('老 hash 原样保留，不被悄悄改写', s6.hash === '#text-translate', `hash="${s6.hash}"`);
   const hl = await cdp.evaluate(
     "(() => { const a = document.querySelector('.sb-item.on'); return a ? a.dataset.key : ''; })()");
-  check('模式深链下侧栏仍高亮「文字工坊」', hl === 'text', `高亮项=${hl}`);
-  check('深链切换也没有重新加载页面以外的副作用', s6.edit === false && s6.images === false);
+  check('老深链下侧栏高亮「无痕改字」', hl === 'edit', `高亮项=${hl}`);
+
+  await cdp.send('Page.navigate', { url: `${BASE}/#text-mask` });
+  await sleep(2500);
+  const s7 = await viewState();
+  check('老深链 /#text-mask 打开打码页签',
+    s7.edit === true && s7.pane === 'mask', `hash="${s7.hash}" pane=${s7.pane}`);
 
   await cdp.send('Page.navigate', { url: `${BASE}/#text` });
   await sleep(2500);
-  const s7 = await viewState();
-  check('裸 #text 落到默认模式，且 hash 不被悄悄改写',
-    s7.text === true && s7.copyVisible === true && s7.hash === '#text', `hash="${s7.hash}"`);
+  const s8 = await viewState();
+  check('裸 #text 落到改字页签',
+    s8.edit === true && s8.pane === 'edit', `hash="${s8.hash}" pane=${s8.pane}`);
 
   console.log('\n[6] 双向切换耗时（采样 5 次取平均）');
   const times = [];

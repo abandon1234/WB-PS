@@ -23,36 +23,44 @@ const $  = (id) => document.getElementById(id);
  *  留着让收藏夹里的旧链接仍能落到生成视图（image.js 会把它们归一到 generate）。 */
 const IMAGE_KEYS = new Set(['generate', 'create', 'combine', 'portrait', 'product', 'projects']);
 
-/** 文字工坊的 hash 集合（与 text.js 的 MODES 对应）。
- *  除了视图本身的 #text，其余是它的三个模式 —— 深链要能直接落到对应模式上。 */
-const TEXT_KEYS = new Set(['text', 'text-copy', 'text-mask', 'text-translate']);
+/** 文字工坊的老 hash。
+ *  它已经并进「无痕改字」的右栏页签 —— 取文字就是那份识别结果本身，
+ *  打码 / 翻译是另外两个页签 —— 所以这些 key 一律落到改字视图，
+ *  只是顺带把右栏切到对应页签（老书签、外面发过的链接点进来还一样能用）。 */
+const LEGACY_PANE = {
+  text: 'edit', 'text-copy': 'edit',
+  'text-mask': 'mask', 'text-translate': 'translate',
+};
 
-/** 视图归属：hash key → 三个容器之一。
+/** 视图归属：hash key → 两个容器之一。
  *  容器只负责显隐；容器内部显示什么由各自模块按 key 自己决定。 */
 function viewOf(key) {
-  if (TEXT_KEYS.has(key)) return 'text';
   if (IMAGE_KEYS.has(key)) return 'images';
   return 'edit';
 }
 
 function currentViewKey() {
   const h = location.hash.replace(/^#/, '');
-  if (h && (IMAGE_KEYS.has(h) || TEXT_KEYS.has(h))) return h;
+  if (h && IMAGE_KEYS.has(h)) return h;
   return 'edit';
 }
 
-/** 三个视图容器的显隐（不碰 URL、不碰 hash）。
+/** 当前 hash 想要打开哪个右栏页签（文字工坊的老链接走的就是这张表） */
+function currentPaneKey() {
+  return LEGACY_PANE[location.hash.replace(/^#/, '')] || 'edit';
+}
+
+/** 两个视图容器的显隐（不碰 URL、不碰 hash）。
  *  返回 false 说明页面骨架不对，调用方应直接放弃 —— 别继续写 hash。 */
 function paintView(name) {
-  const boxes = { edit: $('viewEdit'), images: $('viewImages'), text: $('viewText') };
-  if (!boxes.edit || !boxes.images || !boxes.text) return false;
+  const boxes = { edit: $('viewEdit'), images: $('viewImages') };
+  if (!boxes.edit || !boxes.images) return false;
   for (const n of Object.keys(boxes)) {
     const on = n === name;
     boxes[n].hidden = !on;
     boxes[n].classList.toggle('on', on);
   }
   document.body.classList.toggle('mode-images', name === 'images');
-  document.body.classList.toggle('mode-text', name === 'text');
   return true;
 }
 
@@ -77,12 +85,6 @@ function goView(name, key) {
 window.WBShowImages = function (key) {
   imagesReady = true;
   goView('images', key || 'generate');
-};
-
-/** 文字工坊的回喊通道（由 text.js 在切模式时调用），语义同 WBShowImages */
-window.WBShowText = function (key) {
-  textReady = true;
-  goView('text', key || 'text');
 };
 
 /**
@@ -110,6 +112,71 @@ window.WBEdit = {
     }
     return await restoreWorkspace();
   },
+
+  /* ----------------------------------------------------------------
+     右栏「打码 / 翻译」两个页签用的接口。
+
+     两个面板都只从这里读写改字的状态，**不直接碰 S**：这样"改字"主线上
+     要维护的那摊事（预览重绘、结果列表、脏标记、落盘）只有一处，不会
+     出现两个模块各刷一半、界面自相矛盾的情况。
+
+     注意 local / exports 用 getter：它们（localFacade / api）是后面才声明的
+     const，写成属性值会在定义这一行就踩 TDZ。getter 只在访问时才求值。
+     ---------------------------------------------------------------- */
+  get pane() { return S.pane; },
+  get size() { return { w: S.W, h: S.H }; },
+  get file() { return S.file; },
+  get maskedIds() { return S.maskedIds; },
+  get local() { return localFacade; },
+  get api() { return api; },
+
+  /** 批量合并 edits 并刷新 —— 预览、列表、脏标记、落盘一次性走完 */
+  async applyEdits(batch) {
+    const keys = Object.keys(batch || {});
+    if (!keys.length) return;
+    for (const id of keys) {
+      S.edits[id] = Object.assign({}, S.edits[id] || {}, batch[id]);
+    }
+    renderList(); updateDirty(); paintBoxes();
+    await repaintEdits();
+    persistNow();
+  },
+
+  /** 撤销 edits。传数组 = 只撤这些项；不传 = 全撤。 */
+  async revertEdits(ids) {
+    const keys = (ids && ids.length) ? ids.map(String) : Object.keys(S.edits);
+    let hit = false;
+    for (const k of keys) {
+      if (k in S.edits) { delete S.edits[k]; hit = true; }
+      delete S.maskedIds[k];
+    }
+    if (!hit) return;
+    renderList(); updateDirty(); paintBoxes();
+    await repaintEdits();
+    persistNow();
+  },
+
+  /** 遮盖矩形（色块 / 马赛克 / 模糊 / 手动框抹字）。整份替换，不改动语义。 */
+  get picks() { return S.picks; },
+  setPicks(list) { S.picks = list || []; paintBoxes(); },
+
+  /** 手动框「抹字」的引擎结果图：按签名缓存，只开关某一项时不用重算整张 */
+  get eraseImage() { return S.eraseImg; },
+  setEraseImage(img, sig) { S.eraseImg = img; S.eraseSig = sig; paintBoxes(); },
+
+  /** 被抹字擦掉的项 —— 列表上标一下，免得用户以为"文字丢了" */
+  markMasked(ids, on) {
+    for (const id of ids || []) {
+      if (on) S.maskedIds[id] = 1; else delete S.maskedIds[id];
+    }
+    renderList();
+  },
+
+  /** 面板里点某一行 → 画布上选中并滚到它 */
+  select(id) { select(id); },
+
+  /** 状态条与页脚。两个面板共用改字这一套反馈，不再各写一条。 */
+  status, foot,
 };
 
 /** 外层只负责显示哪个视图；视图内部显示什么由各自模块按自己的状态决定 */
@@ -119,7 +186,6 @@ function applyViewRoute() {
 
   // 目标视图就绪前不切过去 —— 否则会闪一个空壳
   if (name === 'images' && !imagesReady) { window.__pendingView = key; return; }
-  if (name === 'text' && !textReady) { window.__pendingView = key; return; }
 
   if (!paintView(name)) return;
   window.__pendingView = null;
@@ -127,14 +193,13 @@ function applyViewRoute() {
   if (name === 'images' && window.WBImage && window.WBImage.showKey) {
     window.WBImage.showKey(key);
   }
-  if (name === 'text' && window.WBText && window.WBText.showKey) {
-    window.WBText.showKey(key);
-  }
+  // 改字视图：顺带把右栏切到 hash 想要的页签
+  // （文字工坊的老链接 #text-mask / #text-translate 靠的就是这一步）
+  if (name === 'edit' && WBEdit.setPane) WBEdit.setPane(currentPaneKey());
   if (window.WBShell) WBShell.syncActive();
 }
 
 let imagesReady = false;
-let textReady = false;
 window.addEventListener('hashchange', applyViewRoute);
 window.addEventListener('wb-images-ready', () => {
   imagesReady = true;
@@ -142,13 +207,6 @@ window.addEventListener('wb-images-ready', () => {
   window.__pendingView = null;
   applyViewRoute();
   if (want && window.WBImage && window.WBImage.showKey) window.WBImage.showKey(want);
-});
-window.addEventListener('wb-text-ready', () => {
-  textReady = true;
-  const want = window.__pendingView;
-  window.__pendingView = null;
-  applyViewRoute();
-  if (want && window.WBText && window.WBText.showKey) window.WBText.showKey(want);
 });
 
 /* 浏览器本地引擎优先：改字全流程（识别→样式→擦除→重绘）都在本地跑，
@@ -277,11 +335,19 @@ const S = {
   fonts: [],
   backend: '',
   dirty: false,
+
+  /* ---- 页签与打码（右栏三个功能共用这一份状态） ---- */
+  pane: 'edit',          // 当前右栏页签：edit | mask | translate
+  picks: [],             // 遮盖矩形（色块/马赛克/模糊）：{ id, rect, method, color, manual }
+  maskedIds: {},         // 被「抹字」擦掉的 item id —— 只用于列表上做个标记
+  eraseImg: null,        // 手动框「抹字」的引擎结果图（命中项的抹字走 edits，不用它）
+  eraseSig: '',
 };
 
-const imgLayer = $('imgLayer'), boxLayer = $('boxLayer');
+const imgLayer = $('imgLayer'), boxLayer = $('boxLayer'), maskLayer = $('maskLayer');
 const ictx = imgLayer.getContext('2d', { willReadFrequently: true });
 const bctx = boxLayer.getContext('2d');
+const mctx = maskLayer.getContext('2d');
 
 /* ---------------------------------------------------------------- 工具 */
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -371,6 +437,138 @@ function pastePatch(region, dataURL) {
   });
 }
 
+/* ---------------------------------------------------------------- 遮盖层
+
+   色块 / 马赛克 / 模糊这三种遮盖**不经过引擎** —— 它们只是"在图上盖一层"，
+   直接画在 maskLayer 就行，缩放平移交给 .scene 的 transform。
+   「抹字」不走这里：命中项的抹字写进 edits（text 置空，走已有的擦除通路），
+   手动框的抹字调一次 /api/text/erase 拿结果图 —— 各自都有更顺的那条路。 */
+
+/** 三层画布统一按原图分辨率分配（换图时必须三个一起改） */
+function sizeLayers() {
+  for (const cv of [imgLayer, boxLayer, maskLayer]) {
+    cv.width = S.W; cv.height = S.H;
+  }
+}
+
+function loadImageEl(src) {
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('图片解码失败'));
+    i.src = src;
+  });
+}
+
+const maskColorOf = (p) => p.color || '#111111';
+
+/**
+ * 把遮盖矩形画到 ctx 上。
+ *
+ * source 是"底下那张图"：画布上取 imgLayer（可能已经贴过编辑补丁），
+ * 导出时取重绘结果 —— 马赛克与模糊都要读它的像素，所以不能写死成原图。
+ * 坐标一律按**原图像素**，与 rect 的口径一致。
+ */
+function drawMaskRects(ctx, source) {
+  for (const p of S.picks) {
+    const r = p.rect;
+    if (!r || !(r.w > 0) || !(r.h > 0)) continue;
+
+    if (p.method === 'erase') {
+      // 手动框的抹字：引擎已经把结果图整张擦好了，这里只把对应区域贴过来。
+      if (S.eraseImg) ctx.drawImage(S.eraseImg, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+      continue;
+    }
+
+    if (p.method === 'block') {
+      ctx.fillStyle = maskColorOf(p);
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      continue;
+    }
+
+    if (p.method === 'mosaic') {
+      // 像素化：先把该区域缩到很小（尺寸即"块"的粒度），再关掉平滑放大回去。
+      // 块大小取 min(w,h) 的 40%（不是常见的固定值）：打码目的是"看不出是什么"，
+      // 块取小了会保留字形轮廓，眯着眼还能认出来 —— 那就白打了。
+      const bs = Math.max(6, Math.round(Math.min(r.w, r.h) * 0.4));
+      const tw = Math.max(1, Math.round(r.w / bs));
+      const th = Math.max(1, Math.round(r.h / bs));
+      const tmp = document.createElement('canvas');
+      tmp.width = tw; tmp.height = th;
+      const tctx = tmp.getContext('2d');
+      tctx.imageSmoothingEnabled = true;
+      tctx.drawImage(source, r.x, r.y, r.w, r.h, 0, 0, tw, th);
+      const prev = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(tmp, 0, 0, tw, th, r.x, r.y, r.w, r.h);
+      ctx.imageSmoothingEnabled = prev;
+      continue;
+    }
+
+    // blur：裁到该区域后把整图重绘一遍（filter 作用在绘制上）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(r.x, r.y, r.w, r.h);
+    ctx.clip();
+    ctx.filter = `blur(${Math.max(3, Math.min(r.w, r.h) * 0.22)}px)`;
+    ctx.drawImage(source, 0, 0, S.W, S.H);
+    ctx.filter = 'none';
+    ctx.restore();
+  }
+}
+
+/** 重画遮盖层。按住「看原图」时不画 —— 那一下的语义就是"看没被盖过的样子"。 */
+function paintMaskLayer() {
+  mctx.clearRect(0, 0, S.W, S.H);
+  if (!S.picks.length || S.compare || !S.W) return;
+  drawMaskRects(mctx, imgLayer);
+}
+
+/** 识别结果变了：通知右栏「打码 / 翻译」两个页签重算。
+ *  与 resetMaskState 分开是因为时机不同 —— 换图那一刻 items 还是空的，
+ *  要等 analyze 回来才谈得上"按规则重新匹配"。 */
+function notifyItems() {
+  if (window.WBPanels) window.WBPanels.onImageChanged();
+}
+
+/** 换图 / 重新识别时清空打码状态 —— 遮盖矩形与抹字结果都锚在原图上，图换了就作废。
+ *  顺带通知右栏面板重跑一遍规则匹配（识别结果是新的）。 */
+function resetMaskState() {
+  S.picks = [];
+  S.maskedIds = {};
+  S.eraseImg = null;
+  S.eraseSig = '';
+  if (window.WBPanels) window.WBPanels.onImageChanged();
+}
+
+/**
+ * 把遮盖层烧进一张已经重绘好的图，返回新的 Blob；没有遮盖时返回 null。
+ *
+ * 为什么要单独一步：遮盖不进引擎，引擎给的结果图里没有它。
+ * 导出与「生成结果图」都走这里，"看到的"和"导出的"才是同一张。
+ */
+async function burnMasks(src, fmt = 'png', quality = 0.95) {
+  if (!S.picks.length) return null;
+  let url = src, revoke = false;
+  if (src instanceof Blob) { url = URL.createObjectURL(src); revoke = true; }
+  try {
+    const base = document.createElement('canvas');
+    base.width = S.W; base.height = S.H;
+    base.getContext('2d').drawImage(await loadImageEl(url), 0, 0, S.W, S.H);
+
+    // 单独一张输出画布：马赛克 / 模糊要读底图像素，不能在自身上原地画
+    const out = document.createElement('canvas');
+    out.width = S.W; out.height = S.H;
+    const o = out.getContext('2d');
+    o.drawImage(base, 0, 0);
+    drawMaskRects(o, base);
+
+    return await new Promise((res) => out.toBlob(res, `image/${fmt}`, quality));
+  } finally {
+    if (revoke) URL.revokeObjectURL(url);
+  }
+}
+
 function itemColor(it) {
   const e = S.edits[it.id];
   if (e && isChanged(it.id)) return '#fbbf24';
@@ -398,6 +596,7 @@ function weightLabel(step) {
 }
 
 function paintBoxes() {
+  paintMaskLayer();
   bctx.clearRect(0, 0, S.W, S.H);
   if (!S.showBoxes || S.resultMode || S.compare) return;
   const lw = Math.max(1, 1.4 / S.scale);
@@ -728,8 +927,7 @@ async function restoreWorkspace() {
       i.src = url;
     });
     S.img = im; S.W = im.naturalWidth; S.H = im.naturalHeight; S.fileName = name;
-    imgLayer.width = S.W; imgLayer.height = S.H;
-    boxLayer.width = S.W; boxLayer.height = S.H;
+    sizeLayers();
     show($('emptyState'), false);
     show($('viewport'), true);
     paintBase();
@@ -764,6 +962,7 @@ async function restoreWorkspace() {
 
     show($('editorCard'), false);
     renderList(); paintBoxes(); updateDirty();
+    notifyItems();                       // 识别结果换了，右栏两个页签要重算
 
     // 先把改动贴回画布，再选中，这样编辑器里能立刻看到字号/字形反馈
     await repaintEdits();
@@ -825,8 +1024,7 @@ async function handleFile(file) {
     S.W = img.naturalWidth; S.H = img.naturalHeight;
     if (Math.max(S.W, S.H) > 12000) throw new Error('图片过大（长边超过 12000px），请先缩小');
 
-    imgLayer.width = S.W; imgLayer.height = S.H;
-    boxLayer.width = S.W; boxLayer.height = S.H;
+    sizeLayers();
     show($('emptyState'), false);
     show($('viewport'), true);
     paintBase();
@@ -834,6 +1032,7 @@ async function handleFile(file) {
 
     S.items = []; S.edits = {}; S.sel = null; S.applied = {};
     S.resultMode = false;
+    resetMaskState();
     show($('editorCard'), false);
     show($('overviewCard'), false);
     renderList(); paintBoxes();
@@ -852,6 +1051,7 @@ async function handleFile(file) {
     S.items = res.items || [];
     S.fileName = file.name;
     renderList(); paintBoxes(); updateDirty();
+    notifyItems();                       // 识别结果换了，右栏两个页签要重算
 
     status(`识别完成 · ${res.count} 处文字`, 'ok',
       `引擎 ${esc(res.backend)} · 耗时 ${dt}ms · ${S.W}×${S.H}`);
@@ -873,6 +1073,8 @@ async function handleFile(file) {
 /* ---------------------------------------------------------------- 还原 */
 function revertAll() {
   S.edits = {}; S.applied = {};
+  S.picks = []; S.maskedIds = {}; S.eraseImg = null; S.eraseSig = '';
+  if (window.WBPanels) WBPanels.onImageChanged();     // 命中项要重新按规则标一遍
   paintBase(); paintBoxes(); renderList(); updateDirty();
   if (S.sel !== null) loadEditor(S.items.find(i => i.id === S.sel) || {});
   foot('已还原为原图');
@@ -974,6 +1176,11 @@ async function exportImage() {
       if (!r.ok) throw new Error('导出失败 HTTP ' + r.status);
       blob = await r.blob();
     }
+
+    // 遮盖层（色块 / 马赛克 / 模糊）不进引擎，得在结果图上再烧一层 ——
+    // 不烧的话"看着盖住了"和"导出的没盖住"就对不上，那是最糟的一种错。
+    const burned = await burnMasks(blob, fmt, 0.95);
+    if (burned) blob = burned;
 
     const stem = (S.file?.name || 'image').replace(/\.[^.]+$/, '');
     const a = document.createElement('a');
@@ -1435,6 +1642,166 @@ window.addEventListener('resize', () => { if (S.W) applyView(); });
   show($('overviewCard'), false);
   show($('btnClose'), false);
   show($('warnBox'), false);
+
+  /* ================================================================
+     右栏：页签切换 / 可调宽度 / 手动框选
+
+     这三个功能共用左侧同一块画布与同一份识别结果，所以"切页签"只是换右栏
+     内容 —— 画布、缩放、识别结果一样都不动，也不用重新选图。
+     ================================================================ */
+
+  const PANES = ['edit', 'mask', 'translate'];
+
+  function setPane(name) {
+    if (!PANES.includes(name)) name = 'edit';
+    S.pane = name;
+    document.querySelectorAll('.pane-tab').forEach((b) =>
+      b.classList.toggle('on', b.dataset.pane === name));
+    document.querySelectorAll('#inspector > .pane').forEach((p) => {
+      const on = p.dataset.pane === name;
+      p.hidden = !on;
+      p.style.display = on ? '' : 'none';
+    });
+    vp.classList.toggle('masking', name === 'mask');
+    if (window.WBPanels) WBPanels.onPane(name);
+  }
+  WBEdit.setPane = setPane;
+  WBEdit.panes = PANES;
+
+  function wirePanes() {
+    $('paneTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('.pane-tab');
+      if (b) setPane(b.dataset.pane);
+    });
+  }
+
+  /* ---- 宽度拖拽 ----
+     手柄贴在右栏左边缘。往左拖 = 变宽（宽度的增量就是鼠标位移的相反数）。
+     宽度写进 CSS 变量 --insp-w，样式里只声明 width: var(--insp-w) ——
+     这样窄屏的媒体查询还能用 width:auto !important 把它改成上下排布。 */
+  const INSP_DEF = 336, INSP_MIN = 300, INSP_MAX_RATIO = 0.62;
+
+  function applyInspWidth(px) {
+    const max = Math.max(INSP_MIN, Math.round(innerWidth * INSP_MAX_RATIO));
+    const w = clamp(Math.round(px), INSP_MIN, max);
+    $('inspector').style.setProperty('--insp-w', w + 'px');
+    return w;
+  }
+
+  /** 改完宽度可视区就变了：保持缩放，把图重新居中，别让它跑出屏幕外 */
+  function recenterView() {
+    if (!S.W || !S.H) return;
+    const box = $('viewport');
+    S.panX = (box.clientWidth - S.W * S.scale) / 2;
+    S.panY = (box.clientHeight - S.H * S.scale) / 2;
+    applyView();
+  }
+
+  function wireInspectorResize() {
+    const handle = $('inspResize'), insp = $('inspector');
+    let w0 = 0, x0 = 0, on = false;
+
+    const saved = Number(localStorage.getItem('wb.inspW'));
+    if (saved > 0) applyInspWidth(saved);
+
+    const stop = () => {
+      if (!on) return;
+      on = false;
+      handle.classList.remove('on');
+      document.body.classList.remove('resizing');
+      const w = parseInt(insp.style.getPropertyValue('--insp-w'), 10);
+      if (w > 0) localStorage.setItem('wb.inspW', String(w));
+      recenterView();
+    };
+
+    handle.addEventListener('pointerdown', (e) => {
+      on = true;
+      x0 = e.clientX;
+      w0 = insp.getBoundingClientRect().width;
+      handle.classList.add('on');
+      document.body.classList.add('resizing');
+      try { handle.setPointerCapture(e.pointerId); } catch (_) { /* 忽略 */ }
+      e.preventDefault();
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (on) applyInspWidth(w0 + (x0 - e.clientX));
+    });
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
+    handle.addEventListener('dblclick', () => {
+      localStorage.removeItem('wb.inspW');
+      applyInspWidth(INSP_DEF);
+      recenterView();
+    });
+    // 窗口本身缩放时，把已保存的宽度重新夹进新的上下限
+    window.addEventListener('resize', () => {
+      const w = parseInt(insp.style.getPropertyValue('--insp-w'), 10);
+      if (w > 0) applyInspWidth(w);
+    });
+  }
+
+  /* ---- 手动框选 ----
+     只在「打码」页签生效，且**没点到文字框**时才起框 —— 否则会和改字那边
+     "拖拽移动文字位置"抢同一套手势。要平移画布仍然用空格 / Alt / 右键。
+     #marquee 是 .scene 的子节点，所以它的 left/top/width/height 直接吃
+     原图像素即可，缩放平移由 .scene 的 transform 一并带上。 */
+  function wireMarquee() {
+    const box = $('marquee');
+    let cur = null;
+
+    const paint = () => {
+      box.style.left = cur.x + 'px';
+      box.style.top = cur.y + 'px';
+      box.style.width = cur.w + 'px';
+      box.style.height = cur.h + 'px';
+    };
+
+    vp.addEventListener('pointerdown', (e) => {
+      if (S.pane !== 'mask' || e.button !== 0 || S.picking) return;
+      if (S.spaceDown || e.altKey || !S.W) return;
+      const p = toImg(e.clientX, e.clientY);
+      if (hitTest(p.x, p.y) !== null) return;      // 点到文字框 → 交给改字那套
+      cur = { x0: p.x, y0: p.y, x: p.x, y: p.y, w: 0, h: 0, moved: false };
+      box.hidden = false;
+      box.style.display = '';
+      paint();
+      try { vp.setPointerCapture(e.pointerId); } catch (_) { /* 忽略 */ }
+      e.preventDefault();
+    });
+
+    vp.addEventListener('pointermove', (e) => {
+      if (!cur) return;
+      const p = toImg(e.clientX, e.clientY);
+      cur.x = Math.min(cur.x0, p.x);
+      cur.y = Math.min(cur.y0, p.y);
+      cur.w = Math.abs(p.x - cur.x0);
+      cur.h = Math.abs(p.y - cur.y0);
+      // 阈值按显示尺寸算：放大到 800% 时手抖 2px 不该算一次框选
+      if (cur.w * S.scale > 4 || cur.h * S.scale > 4) cur.moved = true;
+      paint();
+    });
+
+    const finish = () => {
+      if (!cur) return;
+      const r = cur;
+      cur = null;
+      box.hidden = true;
+      box.style.display = 'none';
+      box.style.width = box.style.height = '0px';
+      if (!r.moved || !window.WBPanels) return;
+      WBPanels.addManualRect({
+        x: Math.round(r.x), y: Math.round(r.y),
+        w: Math.round(r.w), h: Math.round(r.h),
+      });
+    };
+    vp.addEventListener('pointerup', finish);
+    vp.addEventListener('pointercancel', finish);
+  }
+
+  wirePanes();
+  wireInspectorResize();
+  wireMarquee();
+  setPane(S.pane);
 
   // 离开页面前把工作区落盘，切模块/刷新回来能接着改
   window.addEventListener('pagehide', () => { persistNow(); });
