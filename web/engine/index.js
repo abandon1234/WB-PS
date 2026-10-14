@@ -17,6 +17,8 @@ import { OcrEngine } from './ocr/engine.js';
 import * as styleMod from './style.js';
 import * as eraseMod from './erase.js';
 import * as renderMod from './render.js';
+// 「这次编辑要不要动图」的判定与 UI 侧共用同一实现，见 dirty.js 顶部说明
+import { isDirty } from './dirty.js';
 
 const int = (v) => Math.trunc(v || 0);
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -249,39 +251,8 @@ function eraseMethodOf(edit) {
   return ['auto', 'fill', 'linear', 'inpaint', 'ns', 'telea', 'blur'].includes(m) ? m : 'auto';
 }
 
-/** 判断该编辑是否真的需要动图（避免无意义的擦除重绘） */
-function isDirty(edit, item) {
-  // 显式关闭的项直接跳过，连擦除都不做
-  if (edit.enabled === false) return false;
-
-  const newText = edit.text;
-  if (newText !== undefined && newText !== null && String(newText) !== String(item.text || '')) return true;
-  if (edit.force) return true;
-
-  const style = item.style || {};
-  const checks = [
-    ['family', null], ['font_size', null], ['font_scale', 1.0],
-    ['fg_color', style.fg_color], ['bold', style.bold], ['align', style.align],
-    ['valign', 'bottom'], ['erase_method', 'auto'],
-  ];
-  for (const [key, def] of checks) {
-    if (!(key in edit)) continue;
-    const v = edit[key];
-    if (v === null || v === '' || v === undefined) continue;
-    if (key === 'fg_color' && Array.isArray(v) && Array.isArray(def) && v.join() === def.join()) continue;
-    if (v === def) continue;
-    return true;
-  }
-  for (const key of ['italic', 'offset_x', 'offset_y', 'letter_spacing', 'weight_bias']) {
-    const v = edit[key];
-    if (v !== null && v !== undefined && v !== 0 && v !== false) return true;
-  }
-  const switches = { auto_fit: false, match_sharpness: true, auto_family: true, match_stroke: true };
-  for (const [key, def] of Object.entries(switches)) {
-    if (key in edit && !!edit[key] !== def) return true;
-  }
-  return false;
-}
+/* 「这次编辑要不要动图」的判定已抽到 ./dirty.js —— UI（app.js）与引擎共用一份，
+   两边各写一份会漂移，出现过"UI 贴了预览补丁、引擎却判无改动"的错位。 */
 
 /* ------------------------------------------------------------ 应用编辑 */
 

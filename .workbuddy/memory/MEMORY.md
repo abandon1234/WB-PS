@@ -118,6 +118,18 @@
 
 ## 渲染口径约定
 
+- **「这次编辑要不要动图」的判定只有一份实现：`web/engine/dirty.js` 的 `isDirty`。**
+  UI（`app.js` 的 `isChanged`）动态 `import` 它（**要自己拼 `?v=`**，
+  且 `restoreWorkspace()` 开头 `await DIRTY_READY`），引擎 `engine/index.js` 静态 import 它。
+  **绝不要在 UI 里另写一套**（原来就是两套：UI"字段被设过就算改"、引擎"必须真的
+  和原文/原样式不同"）。口径一裂就出这个错位：UI 判"改了"会立刻贴本地预览补丁，
+  而**补丁的擦除范围是 `rect` 外扩**（`erase.js`：`pad = clamp(round(h*0.9), 8, 48)`，
+  单行文字实测约 22px）→ **框外的东西被一并擦掉**；引擎判"没改"则完全不擦不画 →
+  结果图 ≡ 原图。表现为"界面 6 字、结果图 7 字"，很容易被当成渲染 bug。
+  Python 侧对应实现在 `app/pipeline.py` 的 `_dirty`。
+  `tools/probe_edit_panes.mjs` 的 `[6] 改动判定：UI 与引擎同口径` 盯着这条约定
+  （已做回退验证：把 UI 判据换回旧版，该用例精确转红；验证时要用新 profile，
+  否则同 URL 会吃到浏览器缓存里的旧 `app.js`）。
 - 描边量以**相对字号的比例**（stroke_rel）保存，字号缩放后等比成立。
 - PIL `stroke_width` = 向外扩 N px；canvas 取 `lineWidth = strokePx * 2` 对齐同口径。
   因此**笔画宽度实测变化 ≈ stroke_added 的 2 倍**。

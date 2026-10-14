@@ -456,7 +456,69 @@ const drag = await cdp.evaluate(`(() => {
 check('拖拽手柄能加宽右栏', drag.w > drag.w0 + 80, `${drag.w0}px → ${drag.w}px`);
 check('宽度写进了 localStorage', drag.saved && Number(drag.saved) > drag.w0, `saved=${drag.saved}`);
 
-/* ---- 6. 老链接落到对应页签 ---- */
+/* ---- 6. 改动判定：UI 必须与引擎同口径 ---- */
+
+console.log('\n[6] 改动判定：UI 与引擎同口径');
+
+/* 守的是踩过的坑：UI 曾自己判一套（"字段被设过就算改"），引擎另判一套
+   （"必须真的和原文/原样式不同"）。口径一裂就出事 —— UI 判"改了"会立刻贴本地
+   预览补丁，而补丁的擦除范围是 rect 外扩约 22px（erase.js 的 pad），**框外
+   OCR 没识别出来的字符会被一起擦掉**；apply 那边判"没改"则根本不擦不画。
+   表现为"界面 6 字、结果图 7 字"，被当成渲染错误。 */
+
+const judge = await cdp.evaluate(`(async () => {
+  const m = await import('/static/engine/dirty.js?probe=' + Date.now());
+  const it = { id: 9, text: '聚缘快捷宾馆1',
+               style: { align: 'left', bold: false, fg_color: [0, 0, 0] } };
+  const t = (e) => m.isDirty(e, it);
+  return {
+    sameText: t({ text: '聚缘快捷宾馆1' }), diffText: t({ text: '聚缘快捷宾馆' }),
+    sameAlign: t({ align: 'left' }),        diffAlign: t({ align: 'center' }),
+    sameBold: t({ bold: false }),           diffBold: t({ bold: true }),
+    sameColor: t({ fg_color: [0, 0, 0] }),  diffColor: t({ fg_color: [255, 0, 0] }),
+    defValign: t({ valign: 'bottom' }),     defScale: t({ font_scale: 1 }),
+    defErase: t({ erase_method: 'auto' }),  autoFit: t({ auto_fit: true }),
+    empty: t({}), off: t({ enabled: false, text: 'x' }),
+  };
+})()`);
+const SAME_CASES = ['sameText', 'sameAlign', 'sameBold', 'sameColor',
+                    'defValign', 'defScale', 'defErase', 'empty', 'off'];
+check('引擎判据：与原状等价的编辑不算改动',
+  SAME_CASES.every((k) => judge[k] === false),
+  SAME_CASES.filter((k) => judge[k] !== false).join(',') || '全部等价');
+check('引擎判据：真正不同的编辑才算改动',
+  ['diffText', 'diffAlign', 'diffBold', 'diffColor', 'autoFit']
+    .every((k) => judge[k] === true));
+
+/* UI 侧：先清掉前面几节留下的 edits（翻译那节写进过译文），否则标记数不是从 0 起算 */
+await cdp.evaluate(`window.WBEdit.revertEdits()`);
+await sleep(200);
+
+/* 写一个与原文完全一致的 text，列表不许标「已修改」 */
+await cdp.evaluate(`window.WBEdit.applyEdits({ 0: { text: '联系电话 13800138000' } })`);
+await sleep(300);
+const uiSame = await cdp.evaluate(`(() => {
+  const el = document.querySelector('#itemList .item[data-id="0"]');
+  return { changed: el ? el.classList.contains('changed') : null,
+           n: document.querySelectorAll('#itemList .item.changed').length,
+           foot: document.getElementById('footLeft').textContent };
+})()`);
+check('与原状等价的编辑不会被 UI 标成「已修改」',
+  uiSame.changed === false && uiSame.n === 0,
+  `changed=${uiSame.changed} 标记数=${uiSame.n} foot="${uiSame.foot}"`);
+
+/* 反向：真的改了必须标出来 —— 防止判据被"修"成永远返回 false */
+await cdp.evaluate(`window.WBEdit.applyEdits({ 0: { text: '联系电话 13900139000' } })`);
+await sleep(300);
+const uiDiff = await cdp.evaluate(`(() => {
+  const el = document.querySelector('#itemList .item[data-id="0"]');
+  return { changed: el ? el.classList.contains('changed') : null,
+           n: document.querySelectorAll('#itemList .item.changed').length };
+})()`);
+check('真正改动的编辑仍会被标成「已修改」',
+  uiDiff.changed === true && uiDiff.n === 1, `标记数=${uiDiff.n}`);
+
+/* ---- 7. 老链接落到对应页签 ---- */
 
 await cdp.send('Page.navigate', { url: `${BASE}/#text-mask` });
 await cdp.waitFor(`!!window.WBEdit && window.WBEdit.pane === 'mask'`, 25000, '老链接 #text-mask')

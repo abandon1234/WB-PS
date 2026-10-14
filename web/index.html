@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图片工具 · 无痕改字 &amp; 图像生成</title>
-<link rel="stylesheet" href="/static/shell.css?v=5.2">
-<link rel="stylesheet" href="/static/style.css?v=5.2">
-<link rel="stylesheet" href="/static/image.css?v=5.2">
+<link rel="stylesheet" href="/static/shell.css?v=5.3">
+<link rel="stylesheet" href="/static/style.css?v=5.3">
+<link rel="stylesheet" href="/static/image.css?v=5.3">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%237ee04a'/><text x='50' y='72' font-size='62' text-anchor='middle' fill='%230a1503' font-family='sans-serif' font-weight='700'>W</text></svg>">
 </head>
 <body>
@@ -619,18 +619,18 @@
 </main>
 </div>
 
-<script src="/static/store.js?v=5.2"></script>
-<script src="/static/shell.js?v=5.2"></script>
-<script src="/static/workspace.js?v=5.2"></script>
-<script src="/static/app.js?v=5.2"></script>
-<script src="/static/toolcache.js?v=5.2"></script>
-<script src="/static/image.js?v=5.2"></script>
+<script src="/static/store.js?v=5.3"></script>
+<script src="/static/shell.js?v=5.3"></script>
+<script src="/static/workspace.js?v=5.3"></script>
+<script src="/static/app.js?v=5.3"></script>
+<script src="/static/toolcache.js?v=5.3"></script>
+<script src="/static/image.js?v=5.3"></script>
 <!-- 改字右栏的「打码 / 翻译」两个页签。依赖 app.js 暴露的 WBEdit 接口，
      所以必须排在 app.js 之后。 -->
-<script src="/static/panels.js?v=5.2"></script>
+<script src="/static/panels.js?v=5.3"></script>
 <!-- 浏览器本地引擎（模型缓存在浏览器，网页直接调用本地缓存推理）。
      module 默认延迟执行，会排在上面几个普通脚本之后。 -->
-<script type="module" src="/static/engine/boot.js?v=5.2"></script>
+<script type="module" src="/static/engine/boot.js?v=5.3"></script>
 
 <!-- ======================= 生成视图的浮层（弹层 / 灯箱 / toast） ======================= -->
 <div class="pop-wrap" id="popWrap" hidden></div>

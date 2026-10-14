@@ -574,18 +574,41 @@ function itemColor(it) {
   if (e && isChanged(it.id)) return '#fbbf24';
   return 'rgba(96,165,250,.85)';
 }
+/* ---------------------------------------------------------------- 改动判定
+
+   「这次编辑到底要不要动图」必须和引擎**同口径**，所以判定只有一份实现
+   （web/engine/dirty.js），这里只是把它引进来。
+
+   以前 UI 自己判一套（"字段被设过就算改"），引擎另判一套（"必须真的和原文不同"）。
+   口径一裂就会这样：UI 判"改了" → 立刻贴本地预览补丁，而补丁的擦除范围是
+   rect 外扩约 22px（见 erase.js 的 pad）→ **框外的东西被一起擦掉**；
+   引擎那边判"没改" → apply 不擦不画 → 结果图仍是原图。
+   实测踩到：原图「聚缘快捷宾馆1」，OCR 漏了末尾的 1，用户点了一个与原状等价的
+   样式后，界面 6 字、结果图 7 字，被当成"渲染错了"。 */
+
+let IS_DIRTY = null;
+/** 动态 import 不会被 index.html 的 ?v= 带上，必须自己拼（否则吃到缓存里的旧模块） */
+const SELF_VER = (() => {
+  const s = document.querySelector('script[src*="/static/app.js"]');
+  const m = s && s.src.match(/[?&]v=([^&]+)/);
+  return m ? `?v=${m[1]}` : '';
+})();
+/** 判定模块的就绪 Promise —— 恢复工作区前必须等它，否则会按错口径渲染一遍 */
+const DIRTY_READY = import(`./engine/dirty.js${SELF_VER}`)
+  .then((m) => {
+    IS_DIRTY = m.isDirty;
+    // 就绪前可能已经渲染过（刷新/切回页面），这里补刷一次，
+    // 否则列表标记、"已修改 N 处"、框的颜色都会停留在"全部未修改"。
+    if (S.items.length) { renderList(); updateDirty(); paintBoxes(); }
+  })
+  // 拿不到就一律判"没改"：宁可少一次重绘，也不能凭空擦掉框外内容
+  .catch(() => {});
+
 function isChanged(id) {
   const e = S.edits[id];
   if (!e) return false;
-  if (e.text !== undefined) return true;
-  for (const k of ['family', 'fg_color', 'bold', 'italic', 'align', 'letter_spacing',
-                   'offset_x', 'offset_y', 'font_scale', 'erase_method', 'weight_bias']) {
-    // 字号 100% 与"自动"等价：滑块拖回 100 时不该把这项算成改动
-    if (k === 'font_scale' && e[k] === 1) continue;
-    if (e[k] !== undefined && e[k] !== null && e[k] !== 0 && e[k] !== '' &&
-        e[k] !== false && e[k] !== 'auto') return true;
-  }
-  return false;
+  if (!IS_DIRTY) return false;          // 引擎未就绪时 items 必为空，没有可判的项
+  return IS_DIRTY(e, S.items.find((i) => i.id === id));
 }
 
 /** 粗细微调档位 → 显示文案。0 档代表"自动"，不做任何额外处理。 */
@@ -907,6 +930,8 @@ async function repaintEdits() {
 }
 
 async function restoreWorkspace() {
+  // 先等判定的口径就绪：恢复流程里会排一批补丁，用错口径会把框外内容擦掉
+  await DIRTY_READY;
   if (!window.TextWS) return false;
   let saved = null;
   try { saved = await TextWS.load(); } catch (_) { return false; }
